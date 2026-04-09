@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CHI-tinerary</title>
+    <meta
+      name="description"
+      content="CHI-tinerary: Personalized CHI &#39;26 Agenda Generation from Your Papers."
+    />
+    <meta
+      name="keywords"
+      content="CHI-tinerary, personalized conference agenda, conference agenda generation, CHI 2026, HCI conference planner"
+    />
+    <meta name="author" content="Dimitri Staufer" />
+    <meta name="robots" content="index, follow" />
+    <meta name="application-name" content="CHI-tinerary" />
+    <meta name="apple-mobile-web-app-title" content="CHI-tinerary" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CHI-tinerary" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:title" content="CHI-tinerary" />
+    <meta
+      property="og:description"
+      content="Personalized CHI &#39;26 Agenda Generation from Your Papers."
+    />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="CHI-tinerary" />
+    <meta
+      name="twitter:description"
+      content="Personalized CHI &#39;26 Agenda Generation from Your Papers."
+    />
+    <link rel="license" href="https://creativecommons.org/licenses/by-nc/4.0/" />
+  </head>
+  <body>
+    <div class="bg-shape bg-shape-a"></div>
+    <div class="bg-shape bg-shape-b"></div>
+
+    <main class="page">
+      <section class="hero">
+        <h1>CHI-tinerary</h1>
+        <p class="lead">
+          Personalized CHI &#39;26 Agenda Generation from Your Papers.<br />
+          PDF extraction, TF-IDF scoring, and ranking <strong>all run on-device</strong>.
+        </p>
+      </section>
+
+      <section class="panel">
+        <form id="analyze-form" class="form-grid">
+          <div class="file-field">
+            <label for="pdfs">Select up to 10 PDF files</label>
+            <input
+              id="pdfs"
+              class="file-input-native"
+              name="pdfs"
+              type="file"
+              accept="application/pdf,.pdf"
+              multiple
+              required
+            />
+            <label for="pdfs" class="file-picker-btn">Choose PDF files</label>
+            <p id="file-selection" class="muted file-selection">No files selected yet.</p>
+          </div>
+
+          <div class="keyword-row">
+            <div>
+              <label for="custom-keywords">Boost Keywords (comma/newline separated, auto-refreshes)</label>
+              <textarea
+                id="custom-keywords"
+                name="custom_keywords"
+                rows="3"
+              ></textarea>
+            </div>
+            <aside class="boosted-keywords-panel">
+              <h3>Boosted Keywords</h3>
+              <div id="boosted-keywords-list" class="boosted-keywords-list">
+                <p class="muted boosted-keywords-empty">No boosted keywords yet.</p>
+              </div>
+            </aside>
+          </div>
+
+          <button id="run-btn" class="run-btn" type="submit">Run Analysis</button>
+        </form>
+      </section>
+
+      <section id="status-panel" class="panel">
+        <h2>Status</h2>
+        <p id="status-line">Loading schedule index...</p>
+        <ul id="status-list" class="status-list"></ul>
+      </section>
+
+      <section id="results-panel" class="results-grid"></section>
+      <section id="results-actions" class="results-actions hidden">
+        <button id="load-more-btn" type="button">Load more</button>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <p class="footer-note">
+        <a href="https://creativecommons.org/licenses/by-nc/4.0/" target="_blank" rel="license noopener noreferrer">CC-BY-NC 4.0</a>
+        by
+        <a href="https://www.linkedin.com/in/dimitristaufer/" target="_blank" rel="noopener noreferrer">Dimitri Staufer</a>
+      </p>
+    </footer>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
