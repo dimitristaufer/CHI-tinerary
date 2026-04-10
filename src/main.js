@@ -812,61 +812,9 @@ async function refreshModelCacheUi({ forceUi = false } = {}) {
 }
 
 async function openCalendarImport(icsText, fileName, summary) {
+  void summary;
   const blob = new Blob([icsText], { type: 'text/calendar;charset=utf-8' });
-  const isLikelyMobile = window.matchMedia('(pointer: coarse)').matches;
-  if (isLikelyMobile && typeof File !== 'undefined' && navigator.share && navigator.canShare) {
-    const shareFile = new File([blob], fileName, { type: 'text/calendar' });
-    let canShareFiles = false;
-    try {
-      canShareFiles = navigator.canShare({ files: [shareFile] });
-    } catch {
-      canShareFiles = false;
-    }
-    if (canShareFiles) {
-      try {
-        await navigator.share({
-          title: `Add to calendar: ${summary}`,
-          files: [shareFile],
-        });
-        return 'shared';
-      } catch (error) {
-        if (error && error.name === 'AbortError') {
-          return 'cancelled';
-        }
-      }
-    }
-  }
-
   const objectUrl = URL.createObjectURL(blob);
-  let opened = false;
-
-  try {
-    const popup = window.open(objectUrl, '_blank', 'noopener');
-    opened = Boolean(popup);
-  } catch {
-    opened = false;
-  }
-
-  if (!opened) {
-    try {
-      const openLink = document.createElement('a');
-      openLink.href = objectUrl;
-      openLink.target = '_blank';
-      openLink.rel = 'noopener';
-      document.body.appendChild(openLink);
-      openLink.click();
-      openLink.remove();
-      opened = true;
-    } catch {
-      opened = false;
-    }
-  }
-
-  if (opened) {
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
-    return 'opened';
-  }
-
   const downloadLink = document.createElement('a');
   downloadLink.href = objectUrl;
   downloadLink.download = fileName;
