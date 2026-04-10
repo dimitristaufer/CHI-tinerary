@@ -540,11 +540,12 @@ function formatFloatingIcsDateTime(epochMs) {
 
 function escapeIcsText(value) {
   return String(value || '')
+    .replaceAll('\r', '')
     .replaceAll('\\', '\\\\')
-    .replaceAll('\r\n', '\n')
     .replaceAll('\n', '\\n')
     .replaceAll(';', '\\;')
-    .replaceAll(',', '\\,');
+    .replaceAll(',', '\\,')
+    .replaceAll(/\u0000/g, '');
 }
 
 function foldIcsLine(line) {
@@ -591,6 +592,7 @@ function buildCalendarPayload(row, rowIndex) {
   const dtStamp = formatUtcIcsDateTime(Date.now());
   const dtStart = formatFloatingIcsDateTime(startMs);
   const dtEnd = formatFloatingIcsDateTime(normalizedEndMs);
+  const calendarName = 'CHI-tinerary';
 
   const lines = [
     'BEGIN:VCALENDAR',
@@ -598,9 +600,16 @@ function buildCalendarPayload(row, rowIndex) {
     `PRODID:${ICS_PROD_ID}`,
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
+    `X-WR-CALNAME:${escapeIcsText(calendarName)}`,
+    `X-WR-TIMEZONE:${CONFERENCE_TIMEZONE}`,
     'BEGIN:VEVENT',
     `UID:${uidSlug}@chi-relevance-client`,
     `DTSTAMP:${dtStamp}`,
+    `CREATED:${dtStamp}`,
+    `LAST-MODIFIED:${dtStamp}`,
+    'SEQUENCE:0',
+    'STATUS:CONFIRMED',
+    'TRANSP:OPAQUE',
     `DTSTART;TZID=${CONFERENCE_TIMEZONE}:${dtStart}`,
     `DTEND;TZID=${CONFERENCE_TIMEZONE}:${dtEnd}`,
     `SUMMARY:${escapeIcsText(summary)}`,
@@ -615,7 +624,7 @@ function buildCalendarPayload(row, rowIndex) {
 
   lines.push('END:VEVENT', 'END:VCALENDAR');
 
-  const icsText = lines.map(foldIcsLine).join('\r\n');
+  const icsText = `${lines.map(foldIcsLine).join('\r\n')}\r\n`;
   const fileBase = slugifyForFilename(summary) || `chi-session-${rowIndex + 1}`;
 
   return {
