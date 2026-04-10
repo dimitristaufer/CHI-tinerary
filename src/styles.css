@@ -113,6 +113,7 @@ label {
 }
 
 input[type='number'],
+select,
 textarea {
   width: 100%;
   border: 1px solid var(--border);
@@ -126,6 +127,15 @@ textarea {
 textarea {
   resize: vertical;
   min-height: 86px;
+}
+
+select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, #333 50%), linear-gradient(135deg, #333 50%, transparent 50%);
+  background-position: calc(100% - 18px) calc(50% - 2px), calc(100% - 12px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  padding-right: 2.1rem;
 }
 
 .file-input-native {
@@ -175,7 +185,18 @@ textarea {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 260px;
   gap: 0.75rem;
-  align-items: start;
+  align-items: stretch;
+}
+
+.keyword-input-wrap {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 0.5rem;
+}
+
+.keyword-input-wrap textarea {
+  height: 100%;
+  min-height: 124px;
 }
 
 .boosted-keywords-panel {
@@ -183,10 +204,14 @@ textarea {
   border-radius: 14px;
   padding: 0.72rem 0.8rem;
   background: #fafafa;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 0.5rem;
+  min-height: 0;
 }
 
 .boosted-keywords-panel h3 {
-  margin: 0 0 0.5rem;
+  margin: 0;
   font-size: 0.89rem;
   color: #1f1f1f;
 }
@@ -195,6 +220,9 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
+  align-content: flex-start;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .boosted-keywords-empty {
@@ -224,6 +252,67 @@ textarea {
   color: #5a5a5a;
   font-size: 0.76rem;
   font-weight: 700;
+}
+
+.matching-row {
+  display: grid;
+  grid-template-columns: minmax(250px, 1fr) auto auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.matching-mode-field {
+  display: grid;
+  gap: 0.36rem;
+}
+
+.matching-mode-field select {
+  max-width: 100%;
+}
+
+.model-download-panel {
+  display: grid;
+  gap: 0.35rem;
+  align-self: end;
+}
+
+.model-cache-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.download-model-btn {
+  width: 100%;
+  min-width: 190px;
+  padding: 0.75rem 1rem;
+  font-size: 0.83rem;
+  background: #2a2a2a;
+}
+
+.download-model-btn.is-ready {
+  background: #55b968;
+}
+
+.download-model-btn.is-ready:disabled {
+  opacity: 1;
+}
+
+.model-download-progress-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.model-download-progress-wrap progress {
+  width: 220px;
+  height: 0.62rem;
+}
+
+#model-download-progress-text {
+  font-size: 0.79rem;
+  color: var(--muted);
+  min-width: 3.5ch;
 }
 
 button {
@@ -314,7 +403,7 @@ button:disabled {
 .result-card header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
 }
 
 .rank {
@@ -328,6 +417,27 @@ button:disabled {
   font-size: 1.12rem;
   font-weight: 800;
   color: var(--brand);
+}
+
+.score-wrap {
+  display: grid;
+  gap: 0.08rem;
+  justify-items: end;
+}
+
+.score-mode {
+  margin: 0;
+  font-size: 0.73rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.score-breakdown {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
 }
 
 .result-card h2 {
@@ -456,10 +566,12 @@ button:disabled {
 }
 
 .run-btn {
-  display: block;
-  margin: 0.35rem auto 0;
-  min-width: 250px;
-  padding: 0.92rem 1.55rem;
+  display: inline-flex;
+  margin: 0;
+  min-width: 220px;
+  justify-content: center;
+  align-items: center;
+  padding: 0.84rem 1.45rem;
   font-size: 1rem;
   background: linear-gradient(135deg, #2d2d2d 0%, #101010 100%);
 }
@@ -526,12 +638,18 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
-  .results-grid {
+  .matching-row {
     grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
+  .download-model-btn,
   .run-btn {
     width: 100%;
     min-width: 0;
+  }
+
+  .results-grid {
+    grid-template-columns: 1fr;
   }
 }

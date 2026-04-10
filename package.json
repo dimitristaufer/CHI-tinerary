@@ -8,9 +8,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "build:index": "python3 scripts/build_schedule_index.py",
+    "build:semantic-index": "node scripts/build_schedule_semantic_embeddings.mjs",
     "verify:parity": "node scripts/verify_parity.mjs"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.0.1",
     "pdfjs-dist": "^4.10.38"
   },
   "devDependencies": {

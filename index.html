@@ -41,7 +41,7 @@
         <h1>CHI-tinerary</h1>
         <p class="lead">
           Personalized CHI &#39;26 Agenda Generation from Your Papers.<br />
-          PDF extraction, TF-IDF scoring, and ranking <strong>all run on-device</strong>.
+          PDF extraction and ranking <strong>all run on-device</strong>.
         </p>
       </section>
 
@@ -63,7 +63,7 @@
           </div>
 
           <div class="keyword-row">
-            <div>
+            <div class="keyword-input-wrap">
               <label for="custom-keywords">Boost Keywords (comma/newline separated, auto-refreshes)</label>
               <textarea
                 id="custom-keywords"
@@ -79,7 +79,27 @@
             </aside>
           </div>
 
-          <button id="run-btn" class="run-btn" type="submit">Run Analysis</button>
+          <div class="matching-row">
+            <div class="matching-mode-field">
+              <label for="matching-mode">Matching Mode</label>
+              <select id="matching-mode" name="matching_mode">
+                <option value="tfidf" selected>TF-IDF (Lexical)</option>
+                <option value="semantic">Semantic Embeddings</option>
+                <option value="hybrid">Hybrid (TF-IDF + Semantic)</option>
+              </select>
+            </div>
+            <div class="model-download-panel">
+              <div class="model-cache-actions">
+                <button id="download-model-btn" class="download-model-btn" type="button">Download semantic model</button>
+              </div>
+              <div id="model-download-progress-wrap" class="model-download-progress-wrap hidden" aria-live="polite">
+                <progress id="model-download-progress" max="100" value="0"></progress>
+                <span id="model-download-progress-text">0%</span>
+              </div>
+            </div>
+            <p id="model-download-status" class="hidden" aria-live="polite"></p>
+            <button id="run-btn" class="run-btn" type="submit">Run</button>
+          </div>
         </form>
       </section>
 
@@ -100,7 +120,7 @@
         by
         <a href="https://www.linkedin.com/in/dimitristaufer/" target="_blank" rel="noopener noreferrer">Dimitri Staufer</a>.
         <span class="footer-cta-line">
-          <a class="footer-cta" href="mailto:staufer@tu-berlin.de">Say hi or request a feature</a>
+          <a class="footer-cta" href="mailto:staufer@tu-berlin.de">Say hi</a>
         </span>
       </p>
     </footer>

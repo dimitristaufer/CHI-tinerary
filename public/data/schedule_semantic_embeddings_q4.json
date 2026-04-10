@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "model_id": "onnx-community/all-MiniLM-L6-v2-ONNX",
+  "dtype": "q4",
+  "row_count": 3229,
+  "dimension": 384,
+  "format": "float32le",
+  "generated_at": "2026-04-09T20:20:06.086Z",
+  "source_schedule_version": 2
+}

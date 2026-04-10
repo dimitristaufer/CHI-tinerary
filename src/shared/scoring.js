@@ -118,7 +118,7 @@ export function scoreSchedule({
   const centroidNorm = Math.sqrt(centroidNormSq);
 
   const rows = [];
-  for (const row of scheduleRows) {
+  for (const [rowIndex, row] of scheduleRows.entries()) {
     const { vec, norm } = vectorizePackedTokenPairs(row.tokens || [], idf);
 
     const centroidSim = cosineSimilarity(vec, norm, centroid, centroidNorm);
@@ -132,6 +132,7 @@ export function scoreSchedule({
 
     const score = 100 * (0.7 * centroidSim + 0.3 * maxWorkSim);
     rows.push({
+      row_index: rowIndex,
       title: row.title || '',
       authors: row.authors || '',
       abstract: row.abstract || '',
@@ -141,6 +142,9 @@ export function scoreSchedule({
       session_type: row.session_type || '',
       start_date_unix_ms: row.start_date_unix_ms ?? null,
       end_date_unix_ms: row.end_date_unix_ms ?? null,
+      relevance_mode: 'tfidf',
+      relevance_score_tfidf: score,
+      relevance_score_tfidf_pretty: score.toFixed(2),
       relevance_score: score,
       relevance_score_pretty: score.toFixed(2),
       relevance_centroid_sim: centroidSim,
@@ -148,6 +152,7 @@ export function scoreSchedule({
     });
   }
 
+  const rowsAll = rows.map((row) => ({ ...row }));
   rows.sort((a, b) => b.relevance_score - a.relevance_score);
   rows.forEach((row, idx) => {
     row.relevance_rank = idx + 1;
@@ -158,6 +163,7 @@ export function scoreSchedule({
 
   return {
     totalMatches: rows.length,
+    rows_all: rowsAll,
     rows: resultRows,
     keywords: topKeywords(workCounters, idf, 15),
     workSummaries: worksTexts.map((text, idx) => ({

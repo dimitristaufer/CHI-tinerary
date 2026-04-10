@@ -1,6 +1,7 @@
 import './styles.css';
 import * as pdfjsLib from 'pdfjs-dist/build/pdf.mjs';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
+import { semanticModelUrl } from './shared/semantic-config.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -9,6 +10,8 @@ const EXTRACTION_CONCURRENCY = 2;
 const DEFAULT_VISIBLE_RESULTS = 20;
 const LOAD_MORE_STEP = 20;
 const KEYWORD_DEBOUNCE_MS = 350;
+const CALENDAR_DOWNLOADS_STORAGE_KEY = 'chi_tinerary_downloaded_calendar_items_v1';
+const MATCHING_MODES = new Set(['tfidf', 'semantic', 'hybrid']);
 const ICS_PROD_ID = '-//CHI-tinerary//EN';
 const FALLBACK_EVENT_DURATION_MS = 30 * 60 * 1000;
 const CONFERENCE_TIMEZONE = 'Europe/Madrid';
@@ -39,6 +42,12 @@ const form = document.getElementById('analyze-form');
 const fileInput = document.getElementById('pdfs');
 const fileSelection = document.getElementById('file-selection');
 const keywordInput = document.getElementById('custom-keywords');
+const matchingModeInput = document.getElementById('matching-mode');
+const downloadModelBtn = document.getElementById('download-model-btn');
+const modelDownloadStatus = document.getElementById('model-download-status');
+const modelDownloadProgressWrap = document.getElementById('model-download-progress-wrap');
+const modelDownloadProgress = document.getElementById('model-download-progress');
+const modelDownloadProgressText = document.getElementById('model-download-progress-text');
 const boostedKeywordsList = document.getElementById('boosted-keywords-list');
 const runBtn = document.getElementById('run-btn');
 const loadMoreBtn = document.getElementById('load-more-btn');
@@ -59,12 +68,45 @@ let visibleResults = DEFAULT_VISIBLE_RESULTS;
 let scoringRunSeq = 0;
 let keywordDebounceHandle = null;
 let isExtracting = false;
+let latestMatchingMode = 'tfidf';
+let modelDownloadRequestId = null;
+let modelDownloadBusy = false;
+let semanticModelAvailable = false;
+let modelAvailabilityRefreshSeq = 0;
+const semanticFallbackNotedRequests = new Set();
+const downloadedCalendarItems = loadDownloadedCalendarItems();
 
 scoreWorker.onmessage = (event) => {
   const payload = event.data || {};
 
   if (payload.type === 'ready') {
     setStatus(`Schedule index ready (${payload.rowCount.toLocaleString()} rows).`);
+    return;
+  }
+
+  if (payload.type === 'progress') {
+    const pending = pendingRequests.get(payload.requestId);
+    if (pending && payload.message) {
+      setStatus(payload.message);
+    }
+
+    if (payload.stage === 'semantic_schedule_fallback' && payload.requestId != null) {
+      if (!semanticFallbackNotedRequests.has(payload.requestId)) {
+        semanticFallbackNotedRequests.add(payload.requestId);
+        const detail = payload.reason ? ` (${payload.reason})` : '';
+        appendStatusItem(`Precomputed CHI semantic embeddings were unavailable; using local fallback${detail}`);
+      }
+    }
+
+    if (payload.requestId === modelDownloadRequestId && payload.stage === 'model_download') {
+      setModelDownloadUi({
+        busy: true,
+        statusText: payload.message || 'Downloading semantic model...',
+        progressPercent: Number.isFinite(payload.percent) ? payload.percent : null,
+        loadedBytes: payload.loaded,
+        totalBytes: payload.total,
+      });
+    }
     return;
   }
 
@@ -144,6 +186,135 @@ function parseCustomKeywords(raw) {
   }
 
   return keywords.slice(0, 50);
+}
+
+function normalizeMatchingMode(value) {
+  const mode = String(value || 'tfidf')
+    .trim()
+    .toLowerCase();
+  return MATCHING_MODES.has(mode) ? mode : 'tfidf';
+}
+
+function matchingModeLabel(mode) {
+  if (mode === 'semantic') return 'Semantic';
+  if (mode === 'hybrid') return 'Hybrid';
+  return 'TF-IDF';
+}
+
+function scoringStatusText(mode) {
+  if (mode === 'semantic') return 'Computing semantic relevance in scoring worker...';
+  if (mode === 'hybrid') return 'Computing hybrid relevance (TF-IDF + semantic) in scoring worker...';
+  return 'Computing TF-IDF relevance in scoring worker...';
+}
+
+function modeNeedsSemanticModel(mode = normalizeMatchingMode(matchingModeInput?.value)) {
+  return mode === 'semantic' || mode === 'hybrid';
+}
+
+function updateRunButtonAvailability() {
+  if (!runBtn) return;
+  if (isExtracting) {
+    runBtn.disabled = true;
+    return;
+  }
+
+  const needsSemanticModel = modeNeedsSemanticModel();
+  const disabled = modelDownloadBusy || (needsSemanticModel && !semanticModelAvailable);
+  runBtn.disabled = disabled;
+
+  if (needsSemanticModel && !semanticModelAvailable) {
+    runBtn.title = 'Download the semantic model, or use a deployment that bundles /models files.';
+  } else {
+    runBtn.removeAttribute('title');
+  }
+}
+
+function formatBytes(bytes) {
+  const numeric = Number(bytes);
+  if (!Number.isFinite(numeric) || numeric < 0) return '';
+  if (numeric < 1024) return `${Math.round(numeric)} B`;
+  if (numeric < 1024 * 1024) return `${(numeric / 1024).toFixed(1)} KB`;
+  return `${(numeric / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function isUrlReachable(url) {
+  try {
+    const headResponse = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+    if (headResponse.ok) return true;
+    if (headResponse.status !== 405 && headResponse.status !== 501) {
+      return false;
+    }
+  } catch {
+    // Fallback to GET below.
+  }
+
+  try {
+    const getResponse = await fetch(url, { method: 'GET', cache: 'no-store' });
+    return getResponse.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function isBundledSemanticModelAvailable() {
+  const requiredLocalChecks = ['config.json', 'onnx/model_q4.onnx_data'];
+  for (const file of requiredLocalChecks) {
+    const url = semanticModelUrl(file, window.location.origin);
+    const reachable = await isUrlReachable(url);
+    if (!reachable) return false;
+  }
+  return true;
+}
+
+function setModelDownloadUi({
+  busy = modelDownloadBusy,
+  available = semanticModelAvailable,
+  statusText = '',
+  progressPercent = null,
+  loadedBytes = null,
+  totalBytes = null,
+} = {}) {
+  modelDownloadBusy = Boolean(busy);
+  const modelReady = Boolean(available);
+  if (downloadModelBtn) {
+    downloadModelBtn.disabled = modelDownloadBusy || modelReady;
+    downloadModelBtn.classList.toggle('is-ready', modelReady);
+  }
+
+  if (modelDownloadBusy) {
+    if (downloadModelBtn) downloadModelBtn.textContent = 'Downloading model...';
+  } else if (modelReady) {
+    if (downloadModelBtn) downloadModelBtn.textContent = 'Model ready';
+  } else {
+    if (downloadModelBtn) downloadModelBtn.textContent = 'Download semantic model';
+  }
+
+  if (statusText && modelDownloadStatus) {
+    modelDownloadStatus.textContent = statusText;
+  }
+
+  updateRunButtonAvailability();
+
+  if (progressPercent == null) {
+    if (modelDownloadProgressWrap) modelDownloadProgressWrap.classList.add('hidden');
+    if (modelDownloadProgress) modelDownloadProgress.value = 0;
+    if (modelDownloadProgressText) modelDownloadProgressText.textContent = '0%';
+    return;
+  }
+
+  const normalized = Math.max(0, Math.min(100, Number(progressPercent)));
+  if (modelDownloadProgressWrap) modelDownloadProgressWrap.classList.remove('hidden');
+  if (modelDownloadProgress) modelDownloadProgress.value = normalized;
+
+  const loaded = formatBytes(loadedBytes);
+  const total = formatBytes(totalBytes);
+  if (loaded && total) {
+    if (modelDownloadProgressText) {
+      modelDownloadProgressText.textContent = `${Math.round(normalized)}% (${loaded}/${total})`;
+    }
+  } else {
+    if (modelDownloadProgressText) modelDownloadProgressText.textContent = `${Math.round(normalized)}%`;
+  }
 }
 
 function pageTextFromItems(items) {
@@ -230,9 +401,10 @@ async function extractAllPdfs(files) {
   });
 }
 
-function runWorkerScore({ worksTexts, workNames, customKeywords }) {
+function runWorkerScore({ worksTexts, workNames, customKeywords, matchingMode }) {
   const requestId = ++requestSeq;
-  const timeoutMs = 120000;
+  const normalizedMode = normalizeMatchingMode(matchingMode);
+  const timeoutMs = normalizedMode === 'tfidf' ? 120000 : 900000;
   const topN = scheduleRowCount || 10000;
 
   return new Promise((resolve, reject) => {
@@ -259,9 +431,72 @@ function runWorkerScore({ worksTexts, workNames, customKeywords }) {
       worksTexts,
       workNames,
       customKeywords,
+      matchingMode: normalizedMode,
       topN,
     });
   });
+}
+
+function startWorkerPrefetchModel() {
+  const requestId = ++requestSeq;
+  const timeoutMs = 1800000;
+
+  const promise = new Promise((resolve, reject) => {
+    const timeoutHandle = window.setTimeout(() => {
+      if (!pendingRequests.has(requestId)) return;
+      pendingRequests.delete(requestId);
+      reject(new Error(`Model download timed out after ${Math.round(timeoutMs / 1000)}s.`));
+    }, timeoutMs);
+
+    pendingRequests.set(requestId, {
+      resolve: (value) => {
+        window.clearTimeout(timeoutHandle);
+        resolve(value);
+      },
+      reject: (error) => {
+        window.clearTimeout(timeoutHandle);
+        reject(error);
+      },
+    });
+
+    scoreWorker.postMessage({
+      type: 'prefetch-model',
+      requestId,
+    });
+  });
+
+  return { requestId, promise };
+}
+
+function startWorkerProbeModelAvailability() {
+  const requestId = ++requestSeq;
+  const timeoutMs = 120000;
+
+  const promise = new Promise((resolve, reject) => {
+    const timeoutHandle = window.setTimeout(() => {
+      if (!pendingRequests.has(requestId)) return;
+      pendingRequests.delete(requestId);
+      reject(new Error(`Model availability probe timed out after ${Math.round(timeoutMs / 1000)}s.`));
+    }, timeoutMs);
+
+    pendingRequests.set(requestId, {
+      resolve: (value) => {
+        window.clearTimeout(timeoutHandle);
+        resolve(value);
+      },
+      reject: (error) => {
+        window.clearTimeout(timeoutHandle);
+        reject(error);
+      },
+    });
+
+    scoreWorker.postMessage({
+      type: 'probe-model',
+      requestId,
+    });
+  });
+
+  return { requestId, promise };
 }
 
 function asEpochMs(value) {
@@ -403,6 +638,58 @@ function updateFileSelectionText() {
   fileSelection.textContent = `${files.length} files selected`;
 }
 
+function normalizeCalendarKeyPart(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase();
+}
+
+function calendarItemKey(row) {
+  const payload = {
+    title: normalizeCalendarKeyPart(row?.title),
+    start: asEpochMs(row?.start_date_unix_ms),
+    end: asEpochMs(row?.end_date_unix_ms),
+    room: normalizeCalendarKeyPart(row?.room),
+    building: normalizeCalendarKeyPart(row?.building),
+  };
+  return JSON.stringify(payload);
+}
+
+function loadDownloadedCalendarItems() {
+  try {
+    const raw = window.localStorage.getItem(CALENDAR_DOWNLOADS_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((entry) => typeof entry === 'string'));
+  } catch {
+    return new Set();
+  }
+}
+
+function persistDownloadedCalendarItems() {
+  try {
+    window.localStorage.setItem(CALENDAR_DOWNLOADS_STORAGE_KEY, JSON.stringify(Array.from(downloadedCalendarItems)));
+  } catch {
+    // Ignore storage write failures (e.g., private mode quota restrictions).
+  }
+}
+
+function hasDownloadedCalendarItem(row) {
+  return downloadedCalendarItems.has(calendarItemKey(row));
+}
+
+function markCalendarItemDownloaded(row) {
+  downloadedCalendarItems.add(calendarItemKey(row));
+  persistDownloadedCalendarItems();
+}
+
+function setCalendarButtonDownloadedState(button, downloaded) {
+  if (!(button instanceof HTMLElement)) return;
+  button.classList.toggle('is-added', downloaded);
+  button.setAttribute('data-downloaded', downloaded ? 'true' : 'false');
+}
+
 function renderBoostedKeywords() {
   const keywords = parseCustomKeywords(keywordInput.value);
   boostedKeywordsList.innerHTML = '';
@@ -433,6 +720,86 @@ function renderBoostedKeywords() {
     chip.append(text, remove);
     boostedKeywordsList.appendChild(chip);
   }
+}
+
+async function refreshModelCacheUi({ forceUi = false } = {}) {
+  if (modelDownloadBusy && !forceUi) {
+    updateRunButtonAvailability();
+    return {
+      bundled: false,
+      probeAvailable: semanticModelAvailable,
+      available: semanticModelAvailable,
+      probeError: '',
+    };
+  }
+
+  const refreshSeq = ++modelAvailabilityRefreshSeq;
+  let bundled = false;
+  let probeAvailable = false;
+  let probeError = '';
+
+  try {
+    bundled = await isBundledSemanticModelAvailable();
+  } catch {
+    bundled = false;
+  }
+
+  if (!bundled) {
+    try {
+      const task = startWorkerProbeModelAvailability();
+      const payload = await task.promise;
+      const probeResult = payload?.result || {};
+      probeAvailable = Boolean(probeResult.available);
+      if (!probeAvailable && probeResult.error) {
+        probeError = String(probeResult.error);
+      }
+    } catch (error) {
+      probeAvailable = false;
+      probeError = error instanceof Error ? error.message : String(error);
+    }
+  } else {
+    probeAvailable = true;
+  }
+
+  const available = bundled || probeAvailable;
+  const snapshot = {
+    bundled,
+    probeAvailable,
+    available,
+    probeError,
+  };
+
+  if (refreshSeq !== modelAvailabilityRefreshSeq) {
+    return snapshot;
+  }
+
+  semanticModelAvailable = available;
+
+  if (bundled) {
+    setModelDownloadUi({
+      busy: false,
+      available: true,
+      statusText: 'Semantic model files are bundled in this deployment. You can run Semantic/Hybrid now.',
+    });
+    return snapshot;
+  }
+
+  if (probeAvailable) {
+    setModelDownloadUi({
+      busy: false,
+      available: true,
+      statusText: 'Semantic model is already available in this browser session. You can run Semantic/Hybrid now.',
+    });
+    return snapshot;
+  }
+
+  setModelDownloadUi({
+    busy: false,
+    available: false,
+    statusText: 'Semantic model not available yet in this browser. Click "Download semantic model".',
+  });
+
+  return snapshot;
 }
 
 async function openCalendarImport(icsText, fileName, summary) {
@@ -472,6 +839,26 @@ async function openCalendarImport(icsText, fileName, summary) {
   return 'downloaded';
 }
 
+function formatPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 'n/a';
+  return `${numeric.toFixed(2)}%`;
+}
+
+function scoreBreakdownText(row) {
+  const mode = normalizeMatchingMode(row.relevance_mode || latestMatchingMode);
+  const tfidf = Number(row.relevance_score_tfidf);
+  const semantic = Number(row.relevance_score_semantic);
+
+  if (mode === 'hybrid' && Number.isFinite(tfidf) && Number.isFinite(semantic)) {
+    return `TF-IDF ${tfidf.toFixed(1)}% | Semantic ${semantic.toFixed(1)}%`;
+  }
+  if (mode === 'semantic' && Number.isFinite(tfidf)) {
+    return `TF-IDF baseline ${tfidf.toFixed(1)}%`;
+  }
+  return '';
+}
+
 function renderResults(rows, startIndex = 0) {
   resultsPanel.innerHTML = rows
     .map(
@@ -482,11 +869,18 @@ function renderResults(rows, startIndex = 0) {
         const formattedTimeRange = formatTimeRange(startMs, endMs);
         const dayText = row.day || 'n/a';
         const dayClass = dayPillClass(dayText);
+        const modeLabel = matchingModeLabel(normalizeMatchingMode(row.relevance_mode || latestMatchingMode));
+        const scoreBreakdown = scoreBreakdownText(row);
+        const isCalendarAdded = hasDownloadedCalendarItem(row);
         return `
       <article class="result-card">
         <header>
           <p class="rank">#${row.relevance_rank}</p>
-          <p class="score">${row.relevance_score_pretty}%</p>
+          <div class="score-wrap">
+            <p class="score">${escapeHtml(formatPercent(row.relevance_score))}</p>
+            <p class="score-mode">${escapeHtml(modeLabel)}</p>
+            ${scoreBreakdown ? `<p class="score-breakdown">${escapeHtml(scoreBreakdown)}</p>` : ''}
+          </div>
         </header>
         <h2>${escapeHtml(row.title || 'Untitled')}</h2>
         <p class="authors">${escapeHtml(row.authors || 'No authors listed')}</p>
@@ -499,7 +893,15 @@ function renderResults(rows, startIndex = 0) {
         </dl>
         <p class="abstract">${escapeHtml(row.abstract || 'No abstract provided.')}</p>
         <div class="card-actions">
-          <button type="button" class="calendar-btn" data-row-index="${startIndex + idx}">Add to calendar (.ics)</button>
+          <button
+            type="button"
+            class="calendar-btn ${isCalendarAdded ? 'is-added' : ''}"
+            data-row-index="${startIndex + idx}"
+            data-downloaded="${isCalendarAdded ? 'true' : 'false'}"
+          >
+            Add to calendar (.ics)
+            ${isCalendarAdded ? '<span class="calendar-check" aria-hidden="true">✓</span>' : ''}
+          </button>
         </div>
       </article>
     `
@@ -531,20 +933,24 @@ async function runScoringFromExtracted(statusText, skipDoneStatus = false) {
 
   const runId = ++scoringRunSeq;
   const customKeywords = parseCustomKeywords(keywordInput.value);
-  if (statusText) {
-    setStatus(statusText);
+  const matchingMode = normalizeMatchingMode(matchingModeInput?.value);
+  if (modeNeedsSemanticModel(matchingMode) && !semanticModelAvailable) {
+    throw new Error('Semantic model is not available. Click "Download semantic model" first.');
   }
+  setStatus(statusText || scoringStatusText(matchingMode));
 
   const { result } = await runWorkerScore({
     worksTexts: extractedContext.worksTexts,
     workNames: extractedContext.workNames,
     customKeywords,
+    matchingMode,
   });
 
   if (runId !== scoringRunSeq) {
     return;
   }
 
+  latestMatchingMode = normalizeMatchingMode(result.matching_mode || matchingMode);
   latestRows = result.rows || [];
   visibleResults = Math.min(DEFAULT_VISIBLE_RESULTS, latestRows.length || DEFAULT_VISIBLE_RESULTS);
 
@@ -552,7 +958,9 @@ async function runScoringFromExtracted(statusText, skipDoneStatus = false) {
 
   if (!skipDoneStatus) {
     const shown = Math.min(visibleResults, latestRows.length);
-    setStatus(`Done. Showing ${shown.toLocaleString()} of ${latestRows.length.toLocaleString()} results.`);
+    setStatus(
+      `Done (${matchingModeLabel(latestMatchingMode)}). Showing ${shown.toLocaleString()} of ${latestRows.length.toLocaleString()} results.`
+    );
   }
 }
 
@@ -584,6 +992,15 @@ resultsPanel.addEventListener('click', async (event) => {
     const { icsText, fileName, summary } = buildCalendarPayload(row, rowIndex);
     const result = await openCalendarImport(icsText, fileName, summary);
     if (result === 'cancelled') return;
+    markCalendarItemDownloaded(row);
+    setCalendarButtonDownloadedState(calendarBtn, true);
+    if (!calendarBtn.querySelector('.calendar-check')) {
+      const check = document.createElement('span');
+      check.className = 'calendar-check';
+      check.setAttribute('aria-hidden', 'true');
+      check.textContent = '✓';
+      calendarBtn.appendChild(check);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setStatus(message);
@@ -617,6 +1034,62 @@ loadMoreBtn.addEventListener('click', () => {
   renderResultsPage();
 });
 
+if (downloadModelBtn) {
+  downloadModelBtn.addEventListener('click', async () => {
+    if (modelDownloadBusy) return;
+
+    const availability = await refreshModelCacheUi({ forceUi: true });
+    if (availability.available) {
+      setStatus('Semantic model is already available.');
+      return;
+    }
+
+    setModelDownloadUi({
+      busy: true,
+      available: false,
+      statusText: 'Starting semantic model download...',
+      progressPercent: 0,
+    });
+
+    try {
+      const task = startWorkerPrefetchModel();
+      modelDownloadRequestId = task.requestId;
+      await task.promise;
+      const updated = await refreshModelCacheUi({ forceUi: true });
+      if (updated.available) {
+        setStatus('Semantic model is ready for Semantic/Hybrid matching.');
+      } else {
+        setStatus('Model download finished, but readiness could not be confirmed. Try Download again.');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setModelDownloadUi({
+        busy: false,
+        available: false,
+        statusText: `Model download failed: ${message}`,
+      });
+      setStatus(message);
+      appendStatusItem(`Error: ${message}`);
+    } finally {
+      modelDownloadRequestId = null;
+      if (modelDownloadBusy) {
+        modelDownloadBusy = false;
+        updateRunButtonAvailability();
+      }
+    }
+  });
+}
+
+window.addEventListener('focus', () => {
+  void refreshModelCacheUi();
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    void refreshModelCacheUi();
+  }
+});
+
 keywordInput.addEventListener('input', () => {
   renderBoostedKeywords();
   if (keywordDebounceHandle) {
@@ -625,6 +1098,8 @@ keywordInput.addEventListener('input', () => {
 
   keywordDebounceHandle = window.setTimeout(async () => {
     if (!extractedContext || isExtracting) return;
+    const mode = normalizeMatchingMode(matchingModeInput?.value);
+    if (modeNeedsSemanticModel(mode) && !semanticModelAvailable) return;
 
     try {
       await runScoringFromExtracted(null, true);
@@ -634,6 +1109,24 @@ keywordInput.addEventListener('input', () => {
       appendStatusItem(`Error: ${message}`);
     }
   }, KEYWORD_DEBOUNCE_MS);
+});
+
+matchingModeInput.addEventListener('change', async () => {
+  updateRunButtonAvailability();
+  if (!extractedContext || isExtracting) return;
+  const mode = normalizeMatchingMode(matchingModeInput.value);
+  if (modeNeedsSemanticModel(mode) && !semanticModelAvailable) {
+    setStatus('Semantic model is not available. Download it first or deploy bundled /models files.');
+    return;
+  }
+
+  try {
+    await runScoringFromExtracted(`Recomputing with ${matchingModeLabel(mode)} matching...`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setStatus(message);
+    appendStatusItem(`Error: ${message}`);
+  }
 });
 
 form.addEventListener('submit', async (event) => {
@@ -658,20 +1151,23 @@ form.addEventListener('submit', async (event) => {
     };
 
     isExtracting = false;
-    await runScoringFromExtracted('Computing TF-IDF relevance in scoring worker...');
+    await runScoringFromExtracted();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setStatus(message);
     appendStatusItem(`Error: ${message}`);
   } finally {
     isExtracting = false;
-    runBtn.disabled = false;
+    updateRunButtonAvailability();
   }
 });
 
 (async () => {
   renderBoostedKeywords();
   updateFileSelectionText();
+  latestMatchingMode = normalizeMatchingMode(matchingModeInput?.value);
+  await refreshModelCacheUi();
+  updateRunButtonAvailability();
   try {
     const scheduleIndex = await loadScheduleIndex();
     scheduleRowCount = scheduleIndex.row_count || 0;
