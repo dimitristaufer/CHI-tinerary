@@ -838,6 +838,35 @@ async function openCalendarImport(icsText, fileName, summary) {
   }
 
   const objectUrl = URL.createObjectURL(blob);
+  let opened = false;
+
+  try {
+    const popup = window.open(objectUrl, '_blank', 'noopener');
+    opened = Boolean(popup);
+  } catch {
+    opened = false;
+  }
+
+  if (!opened) {
+    try {
+      const openLink = document.createElement('a');
+      openLink.href = objectUrl;
+      openLink.target = '_blank';
+      openLink.rel = 'noopener';
+      document.body.appendChild(openLink);
+      openLink.click();
+      openLink.remove();
+      opened = true;
+    } catch {
+      opened = false;
+    }
+  }
+
+  if (opened) {
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    return 'opened';
+  }
+
   const downloadLink = document.createElement('a');
   downloadLink.href = objectUrl;
   downloadLink.download = fileName;
