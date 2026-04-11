@@ -264,6 +264,33 @@ function compactWhitespace(text) {
     .trim();
 }
 
+function extractPublicationYear(value) {
+  const text = String(value || '');
+  const match = text.match(/\b(18|19|20)\d{2}\b/);
+  if (!match) return null;
+  const year = Number(match[0]);
+  if (!Number.isInteger(year)) return null;
+  return year;
+}
+
+function sortByPublicationYearDesc(items) {
+  return items
+    .map((item, idx) => ({ item, idx }))
+    .sort((left, right) => {
+      const leftYear = Number(left.item?.publicationYear);
+      const rightYear = Number(right.item?.publicationYear);
+      const leftHasYear = Number.isFinite(leftYear);
+      const rightHasYear = Number.isFinite(rightYear);
+      if (leftHasYear && rightHasYear && leftYear !== rightYear) {
+        return rightYear - leftYear;
+      }
+      if (leftHasYear && !rightHasYear) return -1;
+      if (!leftHasYear && rightHasYear) return 1;
+      return left.idx - right.idx;
+    })
+    .map((entry) => entry.item);
+}
+
 function looksLikeRealAbstract(text) {
   const normalized = compactWhitespace(text);
   if (normalized.length < 45) return false;
@@ -393,6 +420,7 @@ async function fetchResearchGateViaOpenAlex(profileUrl) {
       abstract,
       sourceUrl,
       source: 'researchgate_openalex',
+      publicationYear: Number.isFinite(work?.publication_year) ? work.publication_year : null,
     });
     if (results.length >= MAX_PROFILE_ABSTRACTS) break;
   }
@@ -526,6 +554,7 @@ function extractScholarEntryFromPage(pageText, doc, fallbackUrl) {
   let title = '';
   let abstract = '';
   let sourceUrl = fallbackUrl;
+  let publicationYear = null;
 
   if (doc) {
     const titleNode = doc.querySelector('#gsc_oci_title');
@@ -539,6 +568,19 @@ function extractScholarEntryFromPage(pageText, doc, fallbackUrl) {
         const value = compactWhitespace(row.querySelector('.gsc_oci_value')?.textContent || '');
         if ((field === 'description' || field === 'abstract') && value) {
           abstract = value;
+          break;
+        }
+      }
+    }
+
+    for (const row of doc.querySelectorAll('.gs_scl')) {
+      const field = compactWhitespace(row.querySelector('.gsc_oci_field')?.textContent || '').toLowerCase();
+      const value = compactWhitespace(row.querySelector('.gsc_oci_value')?.textContent || '');
+      if (!value) continue;
+      if (field.includes('publication date') || field === 'year' || field === 'date') {
+        const year = extractPublicationYear(value);
+        if (year) {
+          publicationYear = year;
           break;
         }
       }
@@ -564,6 +606,12 @@ function extractScholarEntryFromPage(pageText, doc, fallbackUrl) {
     }
   }
 
+  if (!publicationYear) {
+    publicationYear =
+      extractPublicationYear(pageText.match(/(?:^|\n)\s*(?:Publication date|Year|Date)\s*[:\-]\s*([^\n]+)/i)?.[1]) ||
+      null;
+  }
+
   if (!looksLikeRealAbstract(abstract)) return null;
 
   return {
@@ -571,6 +619,7 @@ function extractScholarEntryFromPage(pageText, doc, fallbackUrl) {
     abstract,
     sourceUrl,
     source: 'google_scholar',
+    publicationYear,
   };
 }
 
@@ -609,6 +658,7 @@ function collectResearchGatePublicationLinks(pageText, doc) {
 function extractResearchGateEntryFromPage(pageText, doc, publicationUrl) {
   let title = '';
   let abstract = '';
+  let publicationYear = null;
 
   if (doc) {
     const ogTitle = doc.querySelector('meta[property="og:title"]')?.getAttribute('content') || '';
@@ -629,6 +679,21 @@ function extractResearchGateEntryFromPage(pageText, doc, publicationUrl) {
         break;
       }
     }
+
+    const dateCandidates = [
+      doc.querySelector('meta[name="citation_publication_date"]')?.getAttribute('content') || '',
+      doc.querySelector('meta[name="citation_date"]')?.getAttribute('content') || '',
+      doc.querySelector('meta[property="article:published_time"]')?.getAttribute('content') || '',
+      doc.querySelector('meta[name="dc.date"]')?.getAttribute('content') || '',
+      doc.querySelector('meta[name="dc.date.issued"]')?.getAttribute('content') || '',
+    ];
+    for (const candidate of dateCandidates) {
+      const year = extractPublicationYear(candidate);
+      if (year) {
+        publicationYear = year;
+        break;
+      }
+    }
   }
 
   if (!abstract) {
@@ -644,6 +709,13 @@ function extractResearchGateEntryFromPage(pageText, doc, publicationUrl) {
     }
   }
 
+  if (!publicationYear) {
+    publicationYear =
+      extractPublicationYear(pageText.match(/"(?:publicationYear|datePublished|published_time|datePublishedRaw)"\s*:\s*"([^"]+)"/i)?.[1]) ||
+      extractPublicationYear(pageText.match(/(?:Published|Publication date)\s*[:\-]?\s*([^\n<]+)/i)?.[1]) ||
+      null;
+  }
+
   if (!looksLikeRealAbstract(abstract)) return null;
 
   return {
@@ -651,6 +723,7 @@ function extractResearchGateEntryFromPage(pageText, doc, publicationUrl) {
     abstract,
     sourceUrl: publicationUrl,
     source: 'researchgate',
+    publicationYear,
   };
 }
 
@@ -660,6 +733,7 @@ async function fetchScholarProfileAbstracts(profileUrl) {
     const pageUrl = new URL(profileUrl);
     pageUrl.searchParams.set('cstart', String(cstart));
     pageUrl.searchParams.set('pagesize', '20');
+    pageUrl.searchParams.set('sortby', 'pubdate');
     const pages = await fetchPageTextVariants(pageUrl.toString());
     for (const page of pages) {
       const doc = parseHtml(page.text);
@@ -694,7 +768,7 @@ async function fetchScholarProfileAbstracts(profileUrl) {
     if (results.length >= MAX_PROFILE_ABSTRACTS) break;
   }
 
-  return results;
+  return sortByPublicationYearDesc(results);
 }
 
 async function fetchResearchGateProfileAbstracts(profileUrl) {
@@ -751,9 +825,11 @@ async function fetchResearchGateProfileAbstracts(profileUrl) {
     if (results.length >= MAX_PROFILE_ABSTRACTS) break;
   }
 
+  const sortedResults = sortByPublicationYearDesc(results);
+
   return {
     sourceLabel: 'ResearchGate',
-    abstracts: results,
+    abstracts: sortedResults,
   };
 }
 
