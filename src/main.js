@@ -7,6 +7,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const MAX_PDFS = 10;
 const MAX_PROFILE_ABSTRACTS = 20;
+const PROFILE_ABSTRACT_PREVIEW_WORDS = 20;
+const RECENT_ABSTRACT_LOOKBACK_YEARS = 5;
 const EXTRACTION_CONCURRENCY = 2;
 const DEFAULT_VISIBLE_RESULTS = 20;
 const LOAD_MORE_STEP = 20;
@@ -42,6 +44,7 @@ const timeFormatter = new Intl.DateTimeFormat(undefined, {
 const form = document.getElementById('analyze-form');
 const fileInput = document.getElementById('pdfs');
 const fileSelection = document.getElementById('file-selection');
+const clearPdfsBtn = document.getElementById('clear-pdfs-btn');
 const sourceTabButtons = Array.from(document.querySelectorAll('[data-source-tab]'));
 const sourcePanels = Array.from(document.querySelectorAll('[data-source-panel]'));
 const profileAuthorQueryInput = document.getElementById('profile-author-query');
@@ -54,6 +57,8 @@ const profileAbstractsPanel = document.getElementById('profile-abstracts-panel')
 const profileAbstractsList = document.getElementById('profile-abstracts-list');
 const profileAbstractsCount = document.getElementById('profile-abstracts-count');
 const selectAllAbstractsBtn = document.getElementById('select-all-abstracts-btn');
+const selectRecentAbstractsBtn = document.getElementById('select-recent-abstracts-btn');
+const toggleAbstractPreviewBtn = document.getElementById('toggle-abstract-preview-btn');
 const clearAllAbstractsBtn = document.getElementById('clear-all-abstracts-btn');
 const keywordInput = document.getElementById('custom-keywords');
 const matchingModeInput = document.getElementById('matching-mode');
@@ -62,6 +67,7 @@ const modelDownloadStatus = document.getElementById('model-download-status');
 const modelDownloadProgressWrap = document.getElementById('model-download-progress-wrap');
 const modelDownloadProgress = document.getElementById('model-download-progress');
 const modelDownloadProgressText = document.getElementById('model-download-progress-text');
+const runSelectedCount = document.getElementById('run-selected-count');
 const boostedKeywordsList = document.getElementById('boosted-keywords-list');
 const runBtn = document.getElementById('run-btn');
 const loadMoreBtn = document.getElementById('load-more-btn');
@@ -88,6 +94,8 @@ let fetchedAuthorCandidates = [];
 let selectedAuthorCandidateId = '';
 let activeAuthorLookupKey = '';
 let profileFetchRunSeq = 0;
+let recentOnlySelectionActive = false;
+let profileAbstractsExpanded = false;
 const selectedProfileAbstractIds = new Set();
 let modelDownloadRequestId = null;
 let modelDownloadBusy = false;
@@ -270,6 +278,57 @@ function compactWhitespace(text) {
     .trim();
 }
 
+function truncateWords(text, maxWords = PROFILE_ABSTRACT_PREVIEW_WORDS) {
+  const normalized = compactWhitespace(text);
+  if (!normalized) return '';
+  const words = normalized.split(' ');
+  if (words.length <= maxWords) return normalized;
+  return `${words.slice(0, maxWords).join(' ')}…`;
+}
+
+function recentAbstractCutoffYear(lookbackYears = RECENT_ABSTRACT_LOOKBACK_YEARS) {
+  const thisYear = new Date().getFullYear();
+  return thisYear - Math.max(1, lookbackYears) + 1;
+}
+
+function isRecentPublicationYear(publicationYear, lookbackYears = RECENT_ABSTRACT_LOOKBACK_YEARS) {
+  const year = Number(publicationYear);
+  if (!Number.isFinite(year)) return false;
+  return year >= recentAbstractCutoffYear(lookbackYears);
+}
+
+function normalizePersonName(text) {
+  return compactWhitespace(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+function formatCoauthorsLabel(authorNames, selectedAuthorName = '', maxShown = 3) {
+  const selectedNorm = normalizePersonName(selectedAuthorName);
+  const seen = new Set();
+  const coauthors = [];
+
+  for (const rawName of Array.isArray(authorNames) ? authorNames : []) {
+    const name = compactWhitespace(rawName);
+    if (!name) continue;
+    const norm = normalizePersonName(name);
+    if (!norm) continue;
+    if (selectedNorm && norm === selectedNorm) continue;
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    coauthors.push(name);
+  }
+
+  if (!coauthors.length) return '';
+  const shown = coauthors.slice(0, maxShown);
+  const hiddenCount = coauthors.length - shown.length;
+  if (hiddenCount > 0) {
+    return `${shown.join(', ')} +${hiddenCount} more`;
+  }
+  return shown.join(', ');
+}
+
 function looksLikeRealAbstract(text) {
   const normalized = compactWhitespace(text);
   if (normalized.length < 45) return false;
@@ -366,21 +425,11 @@ function authorMatchScore(author, targetName) {
   return score;
 }
 
-function openAlexConceptPreview(author) {
-  if (!Array.isArray(author?.x_concepts)) return '';
-  return author.x_concepts
-    .slice(0, 3)
-    .map((entry) => compactWhitespace(entry?.display_name || ''))
-    .filter(Boolean)
-    .join(', ');
-}
-
 function toOpenAlexCandidate(author, authorQuery) {
   const id = toOpenAlexAuthorId(author?.id);
   if (!id) return null;
   const score = authorMatchScore(author, authorQuery);
   const institution = compactWhitespace(author?.last_known_institution?.display_name || '');
-  const concepts = openAlexConceptPreview(author);
   return {
     id,
     displayName: compactWhitespace(author?.display_name || 'Unknown author'),
@@ -388,7 +437,6 @@ function toOpenAlexCandidate(author, authorQuery) {
     worksCount: Number.isFinite(author?.works_count) ? Number(author.works_count) : 0,
     citedByCount: Number.isFinite(author?.cited_by_count) ? Number(author.cited_by_count) : 0,
     orcid: compactWhitespace(author?.orcid || ''),
-    concepts,
     score,
   };
 }
@@ -453,6 +501,11 @@ async function fetchOpenAlexAbstractsByAuthorId(authorId, { source = 'openalex',
     results.push({
       title,
       abstract,
+      authorNames: Array.isArray(work?.authorships)
+        ? work.authorships
+            .map((authorship) => compactWhitespace(authorship?.author?.display_name || ''))
+            .filter(Boolean)
+        : [],
       sourceUrl: formatOpenAlexSourceUrl(sourceUrl),
       source,
       publicationYear: Number.isFinite(work?.publication_year) ? work.publication_year : null,
@@ -531,16 +584,22 @@ function clearAuthorCandidates({ keepLookupKey = false } = {}) {
 }
 
 function clearFetchedProfileAbstracts() {
+  recentOnlySelectionActive = false;
+  profileAbstractsExpanded = false;
   fetchedProfileAbstracts = [];
   selectedProfileAbstractIds.clear();
   renderProfileAbstracts();
 }
 
-function applyFetchedProfileAbstracts(abstracts, sourceLabel) {
+function applyFetchedProfileAbstracts(abstracts, sourceLabel, selectedAuthorName = '') {
+  recentOnlySelectionActive = false;
+  profileAbstractsExpanded = false;
   fetchedProfileAbstracts = abstracts.slice(0, MAX_PROFILE_ABSTRACTS).map((item, idx) => ({
     id: `${idx + 1}`,
     title: compactWhitespace(item.title).slice(0, 240),
     abstract: compactWhitespace(item.abstract).slice(0, 3000),
+    coauthorsLabel: formatCoauthorsLabel(item.authorNames, selectedAuthorName),
+    publicationYear: Number.isFinite(item.publicationYear) ? Number(item.publicationYear) : null,
     sourceUrl: item.sourceUrl || '',
     source: item.source || '',
     sourceLabel,
@@ -552,6 +611,26 @@ function applyFetchedProfileAbstracts(abstracts, sourceLabel) {
   }
 
   renderProfileAbstracts();
+}
+
+function updateRecentSelectionButtonLabel() {
+  if (!selectRecentAbstractsBtn) return;
+  if (recentOnlySelectionActive) {
+    selectRecentAbstractsBtn.textContent = 'Select all years';
+  } else {
+    selectRecentAbstractsBtn.textContent = `Select recent only (${RECENT_ABSTRACT_LOOKBACK_YEARS}y)`;
+  }
+}
+
+function updateAbstractPreviewToggleButtonLabel() {
+  if (!toggleAbstractPreviewBtn) return;
+  toggleAbstractPreviewBtn.textContent = profileAbstractsExpanded ? 'Collapse all' : 'Expand all';
+}
+
+function updateRunSelectedCount() {
+  if (!runSelectedCount) return;
+  const selected = getSelectedProfileAbstracts().length;
+  runSelectedCount.textContent = `${selected} profile abstracts selected`;
 }
 
 function updateAuthorCandidatesCount() {
@@ -591,14 +670,12 @@ function renderAuthorCandidates() {
       if (candidate.worksCount > 0) metaBits.push(`${candidate.worksCount.toLocaleString()} works`);
       if (candidate.citedByCount > 0) metaBits.push(`${candidate.citedByCount.toLocaleString()} citations`);
       if (candidate.orcid) metaBits.push('ORCID listed');
-      const topics = candidate.concepts ? `Topics: ${candidate.concepts}` : '';
       return `
         <label class="profile-author-candidate-item">
           <input type="radio" name="profile-author-candidate" data-author-id="${escapeHtml(candidate.id)}" ${checked} />
           <div class="profile-author-candidate-body">
             <p class="profile-author-candidate-name">${escapeHtml(candidate.displayName)}</p>
             <p class="profile-author-candidate-meta">${escapeHtml(metaBits.join(' • ') || 'No metadata details')}</p>
-            ${topics ? `<p class="profile-author-candidate-topics">${escapeHtml(topics)}</p>` : ''}
           </div>
         </label>
       `;
@@ -640,7 +717,6 @@ async function fetchAndRenderAbstractsForSelectedCandidate({ runSeq = null } = {
   if (!selectedCandidate) return false;
 
   updateProfileFetchStatus(`Fetching abstracts for ${selectedCandidate.displayName}...`);
-  appendStatusItem(`Fetching OpenAlex abstracts for ${selectedCandidate.displayName}`);
   const abstracts = await fetchAbstractsForAuthorCandidate(selectedCandidate);
   if (runSeq != null && runSeq !== profileFetchRunSeq) {
     return false;
@@ -656,11 +732,10 @@ async function fetchAndRenderAbstractsForSelectedCandidate({ runSeq = null } = {
   }
 
   const sourceLabel = `OpenAlex metadata (${selectedCandidate.displayName})`;
-  applyFetchedProfileAbstracts(abstracts, sourceLabel);
+  applyFetchedProfileAbstracts(abstracts, sourceLabel, selectedCandidate.displayName);
   updateProfileFetchStatus(
     `Fetched ${fetchedProfileAbstracts.length} abstracts from ${selectedCandidate.displayName}. Select relevant abstracts and click Run.`
   );
-  appendStatusItem(`Fetched ${fetchedProfileAbstracts.length} abstracts from ${sourceLabel}.`);
   return true;
 }
 
@@ -676,9 +751,19 @@ function getSelectedProfileAbstracts() {
 }
 
 function updateProfileAbstractSelectionCount() {
-  if (!profileAbstractsCount) return;
   const selected = getSelectedProfileAbstracts().length;
-  profileAbstractsCount.textContent = `${selected} of ${fetchedProfileAbstracts.length} selected`;
+  if (profileAbstractsCount) {
+    profileAbstractsCount.textContent = `${selected} of ${fetchedProfileAbstracts.length} selected`;
+  }
+  if (selectRecentAbstractsBtn) {
+    selectRecentAbstractsBtn.disabled = fetchedProfileAbstracts.length === 0;
+  }
+  if (toggleAbstractPreviewBtn) {
+    toggleAbstractPreviewBtn.disabled = fetchedProfileAbstracts.length === 0;
+  }
+  updateRunSelectedCount();
+  updateRecentSelectionButtonLabel();
+  updateAbstractPreviewToggleButtonLabel();
 }
 
 function renderProfileAbstracts() {
@@ -694,13 +779,20 @@ function renderProfileAbstracts() {
   profileAbstractsList.innerHTML = fetchedProfileAbstracts
     .map((item) => {
       const checked = selectedProfileAbstractIds.has(item.id) ? 'checked' : '';
+      const preview = profileAbstractsExpanded
+        ? compactWhitespace(item.abstract)
+        : truncateWords(item.abstract, PROFILE_ABSTRACT_PREVIEW_WORDS);
+      const coauthorsLine = item.coauthorsLabel
+        ? `<p class="profile-abstract-authors">Co-authors: ${escapeHtml(item.coauthorsLabel)}</p>`
+        : '';
       return `
         <label class="profile-abstract-item">
           <input type="checkbox" data-abstract-id="${escapeHtml(item.id)}" ${checked} />
           <div class="profile-abstract-body">
             <p class="profile-abstract-title">${escapeHtml(item.title || 'Untitled')}</p>
             <p class="profile-abstract-source">${escapeHtml(item.sourceLabel || '')}</p>
-            <p class="profile-abstract-text">${escapeHtml(item.abstract || '')}</p>
+            ${coauthorsLine}
+            <p class="profile-abstract-text">${escapeHtml(preview)}</p>
           </div>
         </label>
       `;
@@ -816,6 +908,7 @@ function setModelDownloadUi({
   modelDownloadBusy = Boolean(busy);
   const modelReady = Boolean(available);
   if (downloadModelBtn) {
+    downloadModelBtn.classList.toggle('hidden', modelReady && !modelDownloadBusy);
     downloadModelBtn.disabled = modelDownloadBusy || modelReady;
     downloadModelBtn.classList.toggle('is-ready', modelReady);
   }
@@ -1175,6 +1268,9 @@ function buildCalendarPayload(row, rowIndex) {
 
 function updateFileSelectionText() {
   const files = Array.from(fileInput.files || []);
+  if (clearPdfsBtn) {
+    clearPdfsBtn.disabled = files.length === 0;
+  }
   if (!files.length) {
     fileSelection.textContent = 'No PDFs selected yet.';
     return;
@@ -1563,7 +1659,6 @@ if (fetchProfileBtn) {
       if (shouldRefreshCandidates) {
         clearFetchedProfileAbstracts();
         updateProfileFetchStatus('Finding author matches...');
-        appendStatusItem(`Resolving author matches for "${authorQuery}"`);
         fetchedAuthorCandidates = await getAuthorCandidatesForQuery(authorQuery);
         if (runSeq !== profileFetchRunSeq) return;
         selectedAuthorCandidateId = fetchedAuthorCandidates[0]?.id || '';
@@ -1584,7 +1679,6 @@ if (fetchProfileBtn) {
       const message = error instanceof Error ? error.message : String(error);
       clearFetchedProfileAbstracts();
       updateProfileFetchStatus(message, true);
-      appendStatusItem(`Profile fetch error: ${message}`);
     } finally {
       if (runSeq === profileFetchRunSeq) {
         fetchProfileBtn.disabled = false;
@@ -1613,7 +1707,6 @@ if (profileAuthorCandidatesList) {
       const message = error instanceof Error ? error.message : String(error);
       clearFetchedProfileAbstracts();
       updateProfileFetchStatus(message, true);
-      appendStatusItem(`Profile fetch error: ${message}`);
     } finally {
       if (fetchProfileBtn && runSeq === profileFetchRunSeq) {
         fetchProfileBtn.disabled = false;
@@ -1636,6 +1729,7 @@ if (profileAuthorQueryInput) {
 
 if (selectAllAbstractsBtn) {
   selectAllAbstractsBtn.addEventListener('click', () => {
+    recentOnlySelectionActive = false;
     selectedProfileAbstractIds.clear();
     for (const item of fetchedProfileAbstracts) {
       selectedProfileAbstractIds.add(item.id);
@@ -1644,8 +1738,40 @@ if (selectAllAbstractsBtn) {
   });
 }
 
+if (selectRecentAbstractsBtn) {
+  selectRecentAbstractsBtn.addEventListener('click', () => {
+    if (!fetchedProfileAbstracts.length) return;
+    const enableRecentOnly = !recentOnlySelectionActive;
+    recentOnlySelectionActive = enableRecentOnly;
+    selectedProfileAbstractIds.clear();
+
+    if (enableRecentOnly) {
+      for (const item of fetchedProfileAbstracts) {
+        if (isRecentPublicationYear(item.publicationYear)) {
+          selectedProfileAbstractIds.add(item.id);
+        }
+      }
+    } else {
+      for (const item of fetchedProfileAbstracts) {
+        selectedProfileAbstractIds.add(item.id);
+      }
+    }
+
+    renderProfileAbstracts();
+  });
+}
+
+if (toggleAbstractPreviewBtn) {
+  toggleAbstractPreviewBtn.addEventListener('click', () => {
+    if (!fetchedProfileAbstracts.length) return;
+    profileAbstractsExpanded = !profileAbstractsExpanded;
+    renderProfileAbstracts();
+  });
+}
+
 if (clearAllAbstractsBtn) {
   clearAllAbstractsBtn.addEventListener('click', () => {
+    recentOnlySelectionActive = false;
     selectedProfileAbstractIds.clear();
     renderProfileAbstracts();
   });
@@ -1662,6 +1788,7 @@ if (profileAbstractsList) {
     } else {
       selectedProfileAbstractIds.delete(id);
     }
+    recentOnlySelectionActive = false;
     updateProfileAbstractSelectionCount();
   });
 }
@@ -1669,6 +1796,13 @@ if (profileAbstractsList) {
 fileInput.addEventListener('change', () => {
   updateFileSelectionText();
 });
+
+if (clearPdfsBtn) {
+  clearPdfsBtn.addEventListener('click', () => {
+    fileInput.value = '';
+    updateFileSelectionText();
+  });
+}
 
 loadMoreBtn.addEventListener('click', () => {
   visibleResults = Math.min(latestRows.length, visibleResults + LOAD_MORE_STEP);
@@ -1801,7 +1935,6 @@ form.addEventListener('submit', async (event) => {
       workNames.push(
         ...selectedAbstracts.map((item, idx) => `profile_abstract_${idx + 1}: ${item.title || 'Untitled'}`)
       );
-      appendStatusItem(`Included ${selectedAbstracts.length} selected profile abstracts.`);
     }
 
     extractedContext = {

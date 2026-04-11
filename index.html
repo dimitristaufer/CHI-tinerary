@@ -102,7 +102,10 @@
                 accept="application/pdf,.pdf"
                 multiple
               />
-              <label for="pdfs" class="file-picker-btn">Choose PDF files</label>
+              <div class="file-picker-actions">
+                <label for="pdfs" class="file-picker-btn">Choose PDF files</label>
+                <button id="clear-pdfs-btn" type="button" class="secondary-btn file-reset-btn">Clear PDFs</button>
+              </div>
               <p id="file-selection" class="muted file-selection">No PDFs selected yet.</p>
             </div>
           </div>
@@ -124,7 +127,7 @@
                   autocomplete="name"
                   placeholder="e.g., Andrew F. Monk"
                 />
-                <button id="fetch-profile-btn" type="button" class="profile-fetch-btn">Fetch abstracts</button>
+                <button id="fetch-profile-btn" type="button" class="profile-fetch-btn">Find author</button>
               </div>
               <p id="profile-fetch-status" class="muted profile-fetch-status">
                 Find your author profile, confirm the match, then fetch metadata abstracts.
@@ -146,6 +149,8 @@
               </div>
               <div class="profile-abstracts-actions">
                 <button id="select-all-abstracts-btn" type="button" class="secondary-btn">Select all</button>
+                <button id="select-recent-abstracts-btn" type="button" class="secondary-btn">Select recent only (5y)</button>
+                <button id="toggle-abstract-preview-btn" type="button" class="secondary-btn">Expand all</button>
                 <button id="clear-all-abstracts-btn" type="button" class="secondary-btn">Clear all</button>
               </div>
               <div id="profile-abstracts-list" class="profile-abstracts-list"></div>
@@ -197,6 +202,7 @@
                 </div>
               </div>
               <p id="model-download-status" class="hidden" aria-live="polite"></p>
+              <p id="run-selected-count" class="muted run-selected-count">0 profile abstracts selected</p>
               <button id="run-btn" class="run-btn" type="submit">Run</button>
             </div>
           </div>
