@@ -6,6 +6,9 @@ import { semanticModelUrl } from './shared/semantic-config.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const MAX_PDFS = 10;
+const MAX_PROFILE_ABSTRACTS = 20;
+const MAX_PROFILE_DETAIL_FETCHES = 24;
+const PROFILE_FETCH_TIMEOUT_MS = 15000;
 const EXTRACTION_CONCURRENCY = 2;
 const DEFAULT_VISIBLE_RESULTS = 20;
 const LOAD_MORE_STEP = 20;
@@ -41,6 +44,14 @@ const timeFormatter = new Intl.DateTimeFormat(undefined, {
 const form = document.getElementById('analyze-form');
 const fileInput = document.getElementById('pdfs');
 const fileSelection = document.getElementById('file-selection');
+const profileUrlInput = document.getElementById('profile-url');
+const fetchProfileBtn = document.getElementById('fetch-profile-btn');
+const profileFetchStatus = document.getElementById('profile-fetch-status');
+const profileAbstractsPanel = document.getElementById('profile-abstracts-panel');
+const profileAbstractsList = document.getElementById('profile-abstracts-list');
+const profileAbstractsCount = document.getElementById('profile-abstracts-count');
+const selectAllAbstractsBtn = document.getElementById('select-all-abstracts-btn');
+const clearAllAbstractsBtn = document.getElementById('clear-all-abstracts-btn');
 const keywordInput = document.getElementById('custom-keywords');
 const matchingModeInput = document.getElementById('matching-mode');
 const downloadModelBtn = document.getElementById('download-model-btn');
@@ -69,12 +80,17 @@ let scoringRunSeq = 0;
 let keywordDebounceHandle = null;
 let isExtracting = false;
 let latestMatchingMode = 'tfidf';
+let fetchedProfileAbstracts = [];
+const selectedProfileAbstractIds = new Set();
 let modelDownloadRequestId = null;
 let modelDownloadBusy = false;
 let semanticModelAvailable = false;
 let modelAvailabilityRefreshSeq = 0;
 const semanticFallbackNotedRequests = new Set();
 const downloadedCalendarItems = loadDownloadedCalendarItems();
+const DEV_PROFILE_FETCH_PROXY_PATH = '/__fetch';
+const rateLimitedProfileHosts = new Set();
+const profileFetchCache = new Map();
 
 scoreWorker.onmessage = (event) => {
   const payload = event.data || {};
@@ -157,8 +173,8 @@ async function loadScheduleIndex() {
   return resp.json();
 }
 
-function validateUploads(files) {
-  if (!files.length) throw new Error('Upload at least one PDF.');
+function validateUploads(files, { allowEmpty = false } = {}) {
+  if (!files.length && !allowEmpty) throw new Error('Upload at least one PDF or select profile abstracts.');
   if (files.length > MAX_PDFS) throw new Error(`Upload at most ${MAX_PDFS} PDFs.`);
 
   for (const file of files) {
@@ -168,6 +184,642 @@ function validateUploads(files) {
       throw new Error(`File '${file.name}' is not a PDF.`);
     }
   }
+}
+
+function normalizeProfileUrl(rawUrl) {
+  const raw = String(rawUrl || '').trim();
+  if (!raw) {
+    throw new Error('Enter a Google Scholar or ResearchGate profile URL.');
+  }
+
+  const prefixed = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  let parsed;
+  try {
+    parsed = new URL(prefixed);
+  } catch {
+    throw new Error('Profile URL is not valid.');
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  const isScholar = host.includes('scholar.google.');
+  const isResearchGate = host === 'researchgate.net' || host.endsWith('.researchgate.net');
+
+  if (!isScholar && !isResearchGate) {
+    throw new Error('Only Google Scholar and ResearchGate profile URLs are supported.');
+  }
+
+  if (isScholar && !parsed.pathname.includes('/citations')) {
+    throw new Error('Google Scholar URL must point to a profile page containing /citations.');
+  }
+
+  if (isResearchGate && parsed.pathname.includes('/publication/')) {
+    throw new Error('Use a ResearchGate profile URL, not a publication URL.');
+  }
+
+  return parsed.toString();
+}
+
+function scholarDetailUrlRegex() {
+  return /https?:\/\/scholar\.google\.[^\s"'<>)]*\/citations\?[^"'<>)]*view_op=view_citation[^"'<>)]*/gi;
+}
+
+function parseJsonLdAbstracts(doc) {
+  if (!doc) return [];
+  const results = [];
+  const stack = [];
+  for (const node of doc.querySelectorAll('script[type="application/ld+json"]')) {
+    const raw = node.textContent || '';
+    if (!raw.trim()) continue;
+    try {
+      stack.push(JSON.parse(raw));
+    } catch {
+      // Ignore malformed script tags.
+    }
+  }
+
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current) continue;
+    if (Array.isArray(current)) {
+      for (const item of current) stack.push(item);
+      continue;
+    }
+    if (typeof current === 'object') {
+      for (const [key, value] of Object.entries(current)) {
+        if ((key.toLowerCase() === 'abstract' || key.toLowerCase() === 'description') && typeof value === 'string') {
+          results.push(value);
+        } else if (value && typeof value === 'object') {
+          stack.push(value);
+        }
+      }
+    }
+  }
+
+  return results;
+}
+
+function compactWhitespace(text) {
+  return String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function looksLikeRealAbstract(text) {
+  const normalized = compactWhitespace(text);
+  if (normalized.length < 45) return false;
+  const lower = normalized.toLowerCase();
+  const blockedFragments = [
+    'request full-text',
+    'discover researchgate',
+    'researchgate has not been able to resolve',
+    'no abstract available',
+  ];
+  return !blockedFragments.some((fragment) => lower.includes(fragment));
+}
+
+function slugToName(input) {
+  return decodeURIComponent(String(input || ''))
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseResearchGateProfileName(profileUrl) {
+  const parsed = new URL(profileUrl);
+  const parts = parsed.pathname.split('/').filter(Boolean);
+  const profileIndex = parts.findIndex((part) => part.toLowerCase() === 'profile');
+  if (profileIndex >= 0 && parts[profileIndex + 1]) {
+    return slugToName(parts[profileIndex + 1]);
+  }
+  if (parts[0]) {
+    return slugToName(parts[0]);
+  }
+  return '';
+}
+
+function reconstructOpenAlexAbstract(invertedIndex) {
+  if (!invertedIndex || typeof invertedIndex !== 'object') return '';
+  const positioned = [];
+  for (const [token, indexes] of Object.entries(invertedIndex)) {
+    if (!Array.isArray(indexes)) continue;
+    for (const index of indexes) {
+      if (!Number.isInteger(index)) continue;
+      positioned.push({ index, token });
+    }
+  }
+  if (!positioned.length) return '';
+  positioned.sort((a, b) => a.index - b.index);
+  return compactWhitespace(
+    positioned
+      .map((entry) => entry.token)
+      .join(' ')
+      .replace(/\s+([,.;:!?])/g, '$1')
+  );
+}
+
+function authorMatchScore(author, targetName) {
+  const normalizedTarget = compactWhitespace(targetName).toLowerCase();
+  const normalizedAuthor = compactWhitespace(author?.display_name || '').toLowerCase();
+  if (!normalizedTarget || !normalizedAuthor) return -1;
+  const tokens = normalizedTarget.split(' ').filter(Boolean);
+  let score = 0;
+  for (const token of tokens) {
+    if (normalizedAuthor.includes(token)) score += 3;
+  }
+  if (normalizedAuthor === normalizedTarget) score += 8;
+  if (String(author?.orcid || '').length > 0) score += 1;
+  if (Number.isFinite(author?.works_count)) score += Math.min(4, Math.log10((author.works_count || 0) + 1));
+  if (Number.isFinite(author?.relevance_score)) score += Math.min(4, Math.log10((author.relevance_score || 0) + 1));
+  return score;
+}
+
+async function fetchOpenAlexJson(url) {
+  const response = await fetch(url, { method: 'GET' });
+  if (!response.ok) {
+    throw new Error(`OpenAlex request failed (${response.status})`);
+  }
+  return response.json();
+}
+
+async function fetchResearchGateViaOpenAlex(profileUrl) {
+  const profileName = parseResearchGateProfileName(profileUrl);
+  if (!profileName || profileName.length < 3) {
+    return [];
+  }
+
+  const authorSearchUrl = `https://api.openalex.org/authors?search=${encodeURIComponent(profileName)}&per-page=6`;
+  const authorPayload = await fetchOpenAlexJson(authorSearchUrl);
+  const candidates = Array.isArray(authorPayload?.results) ? authorPayload.results : [];
+  if (!candidates.length) {
+    return [];
+  }
+
+  const ranked = candidates
+    .map((author) => ({ author, score: authorMatchScore(author, profileName) }))
+    .sort((left, right) => right.score - left.score);
+  const best = ranked[0];
+  if (!best || best.score < 3) {
+    return [];
+  }
+
+  const authorId = String(best.author?.id || '').split('/').pop();
+  if (!authorId) {
+    return [];
+  }
+
+  const worksUrl = `https://api.openalex.org/works?filter=author.id:${encodeURIComponent(authorId)}&per-page=40&sort=publication_year:desc`;
+  const worksPayload = await fetchOpenAlexJson(worksUrl);
+  const works = Array.isArray(worksPayload?.results) ? worksPayload.results : [];
+
+  const results = [];
+  const seen = new Set();
+  for (const work of works) {
+    const title = compactWhitespace(work?.display_name || work?.title || 'Untitled Research Output');
+    const abstract = reconstructOpenAlexAbstract(work?.abstract_inverted_index);
+    if (!looksLikeRealAbstract(abstract)) continue;
+
+    const sourceUrl =
+      work?.primary_location?.landing_page_url ||
+      work?.doi ||
+      work?.id ||
+      profileUrl;
+
+    const fingerprint = `${title.toLowerCase()}::${abstract.slice(0, 170).toLowerCase()}`;
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+
+    results.push({
+      title,
+      abstract,
+      sourceUrl,
+      source: 'researchgate_openalex',
+    });
+    if (results.length >= MAX_PROFILE_ABSTRACTS) break;
+  }
+
+  return results;
+}
+
+function toJinaMirrorVariants(targetUrl) {
+  const parsed = new URL(targetUrl);
+  const noProtocol = `${parsed.host}${parsed.pathname}${parsed.search}${parsed.hash}`;
+  return [
+    `https://r.jina.ai/http://${noProtocol}`,
+    `https://r.jina.ai/${targetUrl}`,
+  ];
+}
+
+function hostOfUrl(urlValue) {
+  try {
+    return new URL(urlValue).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function isRateLimitedHost(urlValue) {
+  const host = hostOfUrl(urlValue);
+  return host ? rateLimitedProfileHosts.has(host) : false;
+}
+
+function buildFetchRequestUrl(targetUrl) {
+  if (!import.meta.env.DEV) {
+    return targetUrl;
+  }
+  const proxied = new URL(DEV_PROFILE_FETCH_PROXY_PATH, window.location.origin);
+  proxied.searchParams.set('url', targetUrl);
+  return proxied.toString();
+}
+
+async function fetchPageTextVariants(targetUrl) {
+  const attempted = new Set();
+  const variants = import.meta.env.DEV
+    ? [targetUrl]
+    : [targetUrl, ...toJinaMirrorVariants(targetUrl)];
+  const pages = [];
+
+  for (const variant of variants) {
+    if (attempted.has(variant)) continue;
+    attempted.add(variant);
+    if (isRateLimitedHost(variant)) continue;
+    try {
+      const requestUrl = buildFetchRequestUrl(variant);
+      if (profileFetchCache.has(requestUrl)) {
+        const cached = profileFetchCache.get(requestUrl);
+        if (cached?.ok) {
+          pages.push({
+            url: variant,
+            text: cached.text,
+            viaProxy: variant !== targetUrl,
+          });
+        }
+        continue;
+      }
+
+      const abortController = new AbortController();
+      const timeoutHandle = window.setTimeout(() => abortController.abort(), PROFILE_FETCH_TIMEOUT_MS);
+      let response;
+      try {
+        response = await fetch(requestUrl, { method: 'GET', signal: abortController.signal });
+      } finally {
+        window.clearTimeout(timeoutHandle);
+      }
+      if (response.status === 429) {
+        rateLimitedProfileHosts.add(hostOfUrl(variant));
+        profileFetchCache.set(requestUrl, { ok: false, status: response.status });
+        continue;
+      }
+      if (!response.ok) {
+        profileFetchCache.set(requestUrl, { ok: false, status: response.status });
+        continue;
+      }
+      const text = await response.text();
+      if (!text) continue;
+      profileFetchCache.set(requestUrl, { ok: true, text, status: response.status });
+      pages.push({
+        url: variant,
+        text,
+        viaProxy: variant !== targetUrl,
+      });
+    } catch {
+      // Ignore and try fallback variant.
+    }
+  }
+  return pages;
+}
+
+function parseHtml(text) {
+  const snippet = String(text || '').trim().slice(0, 400).toLowerCase();
+  if (!snippet) return null;
+  const htmlHint = snippet.startsWith('<!doctype html') || snippet.startsWith('<html') || snippet.includes('<body') || snippet.includes('<head');
+  if (!htmlHint) return null;
+  return new DOMParser().parseFromString(text, 'text/html');
+}
+
+function collectScholarDetailLinks(pageText, doc) {
+  const links = new Set();
+
+  if (doc) {
+    const anchors = doc.querySelectorAll('a.gsc_a_at, a[href*="view_op=view_citation"]');
+    for (const anchor of anchors) {
+      const href = anchor.getAttribute('data-href') || anchor.getAttribute('href') || '';
+      if (!href.includes('view_op=view_citation')) continue;
+      const absolute = href.startsWith('http') ? href : `https://scholar.google.com${href}`;
+      links.add(absolute.replace(/&amp;/g, '&'));
+    }
+  }
+
+  const absoluteMatches = pageText.match(scholarDetailUrlRegex()) || [];
+  for (const match of absoluteMatches) {
+    links.add(match.replace(/&amp;/g, '&'));
+  }
+
+  const relativeMatches = pageText.match(/\/citations\?[^"'<>)]*view_op=view_citation[^"'<>)]*/gi) || [];
+  for (const rel of relativeMatches) {
+    links.add(`https://scholar.google.com${rel.replace(/&amp;/g, '&')}`);
+  }
+
+  return Array.from(links);
+}
+
+function extractScholarEntryFromPage(pageText, doc, fallbackUrl) {
+  let title = '';
+  let abstract = '';
+  let sourceUrl = fallbackUrl;
+
+  if (doc) {
+    const titleNode = doc.querySelector('#gsc_oci_title');
+    title = compactWhitespace(titleNode?.textContent || '');
+    const abstractNode = doc.querySelector('#gsc_oci_descr');
+    abstract = compactWhitespace(abstractNode?.textContent || '');
+
+    if (!abstract) {
+      for (const row of doc.querySelectorAll('.gs_scl')) {
+        const field = compactWhitespace(row.querySelector('.gsc_oci_field')?.textContent || '').toLowerCase();
+        const value = compactWhitespace(row.querySelector('.gsc_oci_value')?.textContent || '');
+        if ((field === 'description' || field === 'abstract') && value) {
+          abstract = value;
+          break;
+        }
+      }
+    }
+
+    const titleLink = doc.querySelector('#gsc_oci_title a')?.getAttribute('href');
+    if (titleLink) {
+      sourceUrl = titleLink.startsWith('http') ? titleLink : `https://scholar.google.com${titleLink}`;
+    }
+  }
+
+  if (!title) {
+    const titleMatch = pageText.match(/(?:^|\n)\s*Title\s*[:\-]\s*(.+)/i);
+    if (titleMatch) {
+      title = compactWhitespace(titleMatch[1]);
+    }
+  }
+
+  if (!abstract) {
+    const match = pageText.match(/(?:^|\n)\s*(?:Description|Abstract)\s*[:\-]\s*([\s\S]{40,2500}?)(?:\n[A-Z][A-Za-z ]{2,25}\s*[:\-]|\n{2,}|$)/i);
+    if (match) {
+      abstract = compactWhitespace(match[1]);
+    }
+  }
+
+  if (!looksLikeRealAbstract(abstract)) return null;
+
+  return {
+    title: title || 'Untitled Scholar Entry',
+    abstract,
+    sourceUrl,
+    source: 'google_scholar',
+  };
+}
+
+function normalizeResearchGatePublicationUrl(url) {
+  return url
+    .replace(/^https?:\/\/r\.jina\.ai\/https?:\/\//i, 'https://')
+    .replace(/^https?:\/\/r\.jina\.ai\/http:\/\//i, 'https://')
+    .split('?')[0];
+}
+
+function collectResearchGatePublicationLinks(pageText, doc) {
+  const links = new Set();
+
+  if (doc) {
+    for (const anchor of doc.querySelectorAll('a[href*="/publication/"]')) {
+      const href = anchor.getAttribute('href') || '';
+      if (!href.includes('/publication/')) continue;
+      const absolute = href.startsWith('http') ? href : `https://www.researchgate.net${href}`;
+      links.add(normalizeResearchGatePublicationUrl(absolute));
+    }
+  }
+
+  const absoluteMatches = pageText.match(/https?:\/\/(?:www\.)?researchgate\.net\/publication\/[^\s"'<>)]*/gi) || [];
+  for (const match of absoluteMatches) {
+    links.add(normalizeResearchGatePublicationUrl(match));
+  }
+
+  const relativeMatches = pageText.match(/\/publication\/[A-Za-z0-9_\-./%]+/g) || [];
+  for (const rel of relativeMatches) {
+    links.add(normalizeResearchGatePublicationUrl(`https://www.researchgate.net${rel}`));
+  }
+
+  return Array.from(links);
+}
+
+function extractResearchGateEntryFromPage(pageText, doc, publicationUrl) {
+  let title = '';
+  let abstract = '';
+
+  if (doc) {
+    const ogTitle = doc.querySelector('meta[property="og:title"]')?.getAttribute('content') || '';
+    title = compactWhitespace(ogTitle) || compactWhitespace(doc.querySelector('h1')?.textContent || '');
+
+    const candidates = [
+      ...parseJsonLdAbstracts(doc),
+      doc.querySelector('meta[property="og:description"]')?.getAttribute('content') || '',
+      doc.querySelector('meta[name="description"]')?.getAttribute('content') || '',
+    ]
+      .map((entry) => compactWhitespace(entry))
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length);
+
+    for (const candidate of candidates) {
+      if (looksLikeRealAbstract(candidate)) {
+        abstract = candidate;
+        break;
+      }
+    }
+  }
+
+  if (!abstract) {
+    const escaped = pageText.match(/"abstract"\s*:\s*"([^"]{40,5000})"/i) || pageText.match(/"description"\s*:\s*"([^"]{40,5000})"/i);
+    if (escaped) {
+      const decoded = escaped[1]
+        .replace(/\\n/g, ' ')
+        .replace(/\\"/g, '"')
+        .replace(/\\u[0-9a-fA-F]{4}/g, (sequence) => String.fromCharCode(Number.parseInt(sequence.slice(2), 16)));
+      if (looksLikeRealAbstract(decoded)) {
+        abstract = compactWhitespace(decoded);
+      }
+    }
+  }
+
+  if (!looksLikeRealAbstract(abstract)) return null;
+
+  return {
+    title: title || 'Untitled ResearchGate Entry',
+    abstract,
+    sourceUrl: publicationUrl,
+    source: 'researchgate',
+  };
+}
+
+async function fetchScholarProfileAbstracts(profileUrl) {
+  const detailLinks = new Set();
+  for (const cstart of [0, 20]) {
+    const pageUrl = new URL(profileUrl);
+    pageUrl.searchParams.set('cstart', String(cstart));
+    pageUrl.searchParams.set('pagesize', '20');
+    const pages = await fetchPageTextVariants(pageUrl.toString());
+    for (const page of pages) {
+      const doc = parseHtml(page.text);
+      const links = collectScholarDetailLinks(page.text, doc);
+      for (const link of links) {
+        detailLinks.add(link);
+        if (detailLinks.size >= MAX_PROFILE_ABSTRACTS) break;
+      }
+      if (detailLinks.size >= MAX_PROFILE_ABSTRACTS) break;
+    }
+    if (detailLinks.size >= MAX_PROFILE_ABSTRACTS) break;
+  }
+
+  const results = [];
+  const seen = new Set();
+  let attempts = 0;
+  for (const link of detailLinks) {
+    if (attempts >= MAX_PROFILE_DETAIL_FETCHES) break;
+    if (rateLimitedProfileHosts.size > 0 && results.length > 0) break;
+    attempts += 1;
+    const pages = await fetchPageTextVariants(link);
+    for (const page of pages) {
+      const doc = parseHtml(page.text);
+      const item = extractScholarEntryFromPage(page.text, doc, link);
+      if (!item) continue;
+      const fingerprint = `${item.title.toLowerCase()}::${item.abstract.slice(0, 160).toLowerCase()}`;
+      if (seen.has(fingerprint)) break;
+      seen.add(fingerprint);
+      results.push(item);
+      break;
+    }
+    if (results.length >= MAX_PROFILE_ABSTRACTS) break;
+  }
+
+  return results;
+}
+
+async function fetchResearchGateProfileAbstracts(profileUrl) {
+  try {
+    const openAlexResults = await fetchResearchGateViaOpenAlex(profileUrl);
+    if (openAlexResults.length) {
+      return {
+        sourceLabel: 'ResearchGate (OpenAlex metadata)',
+        abstracts: openAlexResults,
+      };
+    }
+  } catch {
+    // Fall through to direct scraping attempts.
+  }
+
+  const publicationLinks = new Set();
+  const profilePages = [profileUrl];
+  if (!profileUrl.includes('/publications')) {
+    profilePages.push(`${profileUrl.replace(/\/$/, '')}/publications`);
+  }
+
+  for (const pageUrl of profilePages) {
+    const pages = await fetchPageTextVariants(pageUrl);
+    for (const page of pages) {
+      const doc = parseHtml(page.text);
+      const links = collectResearchGatePublicationLinks(page.text, doc);
+      for (const link of links) {
+        publicationLinks.add(link);
+        if (publicationLinks.size >= MAX_PROFILE_ABSTRACTS) break;
+      }
+      if (publicationLinks.size >= MAX_PROFILE_ABSTRACTS) break;
+    }
+    if (publicationLinks.size >= MAX_PROFILE_ABSTRACTS) break;
+  }
+
+  const results = [];
+  const seen = new Set();
+  let attempts = 0;
+  for (const publicationUrl of publicationLinks) {
+    if (attempts >= MAX_PROFILE_DETAIL_FETCHES) break;
+    if (rateLimitedProfileHosts.size > 0 && results.length > 0) break;
+    attempts += 1;
+    const pages = await fetchPageTextVariants(publicationUrl);
+    for (const page of pages) {
+      const doc = parseHtml(page.text);
+      const item = extractResearchGateEntryFromPage(page.text, doc, publicationUrl);
+      if (!item) continue;
+      const fingerprint = `${item.title.toLowerCase()}::${item.abstract.slice(0, 160).toLowerCase()}`;
+      if (seen.has(fingerprint)) break;
+      seen.add(fingerprint);
+      results.push(item);
+      break;
+    }
+    if (results.length >= MAX_PROFILE_ABSTRACTS) break;
+  }
+
+  return {
+    sourceLabel: 'ResearchGate',
+    abstracts: results,
+  };
+}
+
+async function fetchProfileAbstracts(profileUrl) {
+  const parsed = new URL(profileUrl);
+  const host = parsed.hostname.toLowerCase();
+  if (host.includes('scholar.google.')) {
+    const abstracts = await fetchScholarProfileAbstracts(profileUrl);
+    return { sourceLabel: 'Google Scholar', abstracts };
+  }
+  if (host === 'researchgate.net' || host.endsWith('.researchgate.net')) {
+    const result = await fetchResearchGateProfileAbstracts(profileUrl);
+    if (Array.isArray(result)) {
+      return { sourceLabel: 'ResearchGate', abstracts: result };
+    }
+    return {
+      sourceLabel: result?.sourceLabel || 'ResearchGate',
+      abstracts: Array.isArray(result?.abstracts) ? result.abstracts : [],
+    };
+  }
+  throw new Error('Only Google Scholar and ResearchGate profile URLs are supported.');
+}
+
+function updateProfileFetchStatus(text, isError = false) {
+  if (!profileFetchStatus) return;
+  profileFetchStatus.textContent = text;
+  profileFetchStatus.classList.toggle('is-error', Boolean(isError));
+}
+
+function getSelectedProfileAbstracts() {
+  if (!fetchedProfileAbstracts.length || !selectedProfileAbstractIds.size) return [];
+  return fetchedProfileAbstracts.filter((item) => selectedProfileAbstractIds.has(item.id));
+}
+
+function updateProfileAbstractSelectionCount() {
+  if (!profileAbstractsCount) return;
+  const selected = getSelectedProfileAbstracts().length;
+  profileAbstractsCount.textContent = `${selected} of ${fetchedProfileAbstracts.length} selected`;
+}
+
+function renderProfileAbstracts() {
+  if (!profileAbstractsPanel || !profileAbstractsList) return;
+  if (!fetchedProfileAbstracts.length) {
+    profileAbstractsPanel.classList.add('hidden');
+    profileAbstractsList.innerHTML = '';
+    updateProfileAbstractSelectionCount();
+    return;
+  }
+
+  profileAbstractsPanel.classList.remove('hidden');
+  profileAbstractsList.innerHTML = fetchedProfileAbstracts
+    .map((item) => {
+      const checked = selectedProfileAbstractIds.has(item.id) ? 'checked' : '';
+      return `
+        <label class="profile-abstract-item">
+          <input type="checkbox" data-abstract-id="${escapeHtml(item.id)}" ${checked} />
+          <div class="profile-abstract-body">
+            <p class="profile-abstract-title">${escapeHtml(item.title || 'Untitled')}</p>
+            <p class="profile-abstract-source">${escapeHtml(item.sourceLabel || '')}</p>
+            <p class="profile-abstract-text">${escapeHtml(item.abstract || '')}</p>
+          </div>
+        </label>
+      `;
+    })
+    .join('');
+  updateProfileAbstractSelectionCount();
 }
 
 function parseCustomKeywords(raw) {
@@ -637,7 +1289,7 @@ function buildCalendarPayload(row, rowIndex) {
 function updateFileSelectionText() {
   const files = Array.from(fileInput.files || []);
   if (!files.length) {
-    fileSelection.textContent = 'No files selected yet.';
+    fileSelection.textContent = 'No PDFs selected yet.';
     return;
   }
   if (files.length === 1) {
@@ -914,7 +1566,7 @@ function renderResultsPage() {
 
 async function runScoringFromExtracted(statusText, skipDoneStatus = false) {
   if (!extractedContext) {
-    throw new Error('Upload PDFs and run analysis first.');
+    throw new Error('Upload PDFs or select profile abstracts, then run analysis.');
   }
 
   const runId = ++scoringRunSeq;
@@ -1010,6 +1662,100 @@ boostedKeywordsList.addEventListener('click', (event) => {
   keywordInput.value = nextKeywords.join(', ');
   keywordInput.dispatchEvent(new Event('input', { bubbles: true }));
 });
+
+if (fetchProfileBtn) {
+  fetchProfileBtn.addEventListener('click', async () => {
+    try {
+      const normalizedUrl = normalizeProfileUrl(profileUrlInput?.value);
+      rateLimitedProfileHosts.clear();
+      profileFetchCache.clear();
+      fetchProfileBtn.disabled = true;
+      updateProfileFetchStatus('Fetching abstracts from profile...');
+      appendStatusItem(`Fetching profile abstracts from ${normalizedUrl}`);
+
+      const { sourceLabel, abstracts } = await fetchProfileAbstracts(normalizedUrl);
+      if (!abstracts.length) {
+        fetchedProfileAbstracts = [];
+        selectedProfileAbstractIds.clear();
+        renderProfileAbstracts();
+        if (rateLimitedProfileHosts.size > 0) {
+          updateProfileFetchStatus(
+            `No abstracts returned before source rate limit. Wait a bit and retry for ${sourceLabel}.`,
+            true
+          );
+        } else {
+          updateProfileFetchStatus(`No abstracts were found on this ${sourceLabel} profile.`, true);
+        }
+        return;
+      }
+
+      fetchedProfileAbstracts = abstracts.slice(0, MAX_PROFILE_ABSTRACTS).map((item, idx) => ({
+        id: `${idx + 1}`,
+        title: compactWhitespace(item.title).slice(0, 240),
+        abstract: compactWhitespace(item.abstract).slice(0, 3000),
+        sourceUrl: item.sourceUrl || '',
+        source: item.source || '',
+        sourceLabel,
+      }));
+
+      selectedProfileAbstractIds.clear();
+      for (const item of fetchedProfileAbstracts) {
+        selectedProfileAbstractIds.add(item.id);
+      }
+
+      renderProfileAbstracts();
+      const partialSuffix =
+        rateLimitedProfileHosts.size > 0
+          ? ' Source rate-limited; showing partial results.'
+          : '';
+      updateProfileFetchStatus(
+        `Fetched ${fetchedProfileAbstracts.length} abstracts from ${sourceLabel}. Select relevant abstracts and click Run.${partialSuffix}`
+      );
+      appendStatusItem(`Fetched ${fetchedProfileAbstracts.length} abstracts from ${sourceLabel}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      fetchedProfileAbstracts = [];
+      selectedProfileAbstractIds.clear();
+      renderProfileAbstracts();
+      updateProfileFetchStatus(message, true);
+      appendStatusItem(`Profile fetch error: ${message}`);
+    } finally {
+      fetchProfileBtn.disabled = false;
+    }
+  });
+}
+
+if (selectAllAbstractsBtn) {
+  selectAllAbstractsBtn.addEventListener('click', () => {
+    selectedProfileAbstractIds.clear();
+    for (const item of fetchedProfileAbstracts) {
+      selectedProfileAbstractIds.add(item.id);
+    }
+    renderProfileAbstracts();
+  });
+}
+
+if (clearAllAbstractsBtn) {
+  clearAllAbstractsBtn.addEventListener('click', () => {
+    selectedProfileAbstractIds.clear();
+    renderProfileAbstracts();
+  });
+}
+
+if (profileAbstractsList) {
+  profileAbstractsList.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    const id = String(target.dataset.abstractId || '');
+    if (!id) return;
+    if (target.checked) {
+      selectedProfileAbstractIds.add(id);
+    } else {
+      selectedProfileAbstractIds.delete(id);
+    }
+    updateProfileAbstractSelectionCount();
+  });
+}
 
 fileInput.addEventListener('change', () => {
   updateFileSelectionText();
@@ -1122,18 +1868,36 @@ form.addEventListener('submit', async (event) => {
 
   try {
     const files = Array.from(fileInput.files || []);
-    validateUploads(files);
+    const selectedAbstracts = getSelectedProfileAbstracts();
+    validateUploads(files, { allowEmpty: selectedAbstracts.length > 0 });
 
     runBtn.disabled = true;
     isExtracting = true;
     extractedContext = null;
 
-    setStatus('Extracting text from PDFs with pdf.js...');
-    const worksTexts = await extractAllPdfs(files);
+    let worksTexts = [];
+    const workNames = [];
+
+    if (files.length) {
+      setStatus('Extracting text from PDFs with pdf.js...');
+      const pdfWorksTexts = await extractAllPdfs(files);
+      worksTexts = worksTexts.concat(pdfWorksTexts);
+      workNames.push(...files.map((f) => f.name));
+    }
+
+    if (selectedAbstracts.length) {
+      const prefix = files.length ? 'Combining selected profile abstracts with extracted PDF text...' : 'Preparing selected profile abstracts...';
+      setStatus(prefix);
+      worksTexts = worksTexts.concat(selectedAbstracts.map((item) => item.abstract));
+      workNames.push(
+        ...selectedAbstracts.map((item, idx) => `profile_abstract_${idx + 1}: ${item.title || 'Untitled'}`)
+      );
+      appendStatusItem(`Included ${selectedAbstracts.length} selected profile abstracts.`);
+    }
 
     extractedContext = {
       worksTexts,
-      workNames: files.map((f) => f.name),
+      workNames,
     };
 
     isExtracting = false;
@@ -1150,6 +1914,7 @@ form.addEventListener('submit', async (event) => {
 
 (async () => {
   renderBoostedKeywords();
+  renderProfileAbstracts();
   updateFileSelectionText();
   latestMatchingMode = normalizeMatchingMode(matchingModeInput?.value);
   await refreshModelCacheUi();

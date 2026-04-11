@@ -11,6 +11,13 @@ npm run build
 
 `dist/` is deployed to GitHub Pages via Actions on push.
 
+## Inputs
+
+- Upload up to 10 PDFs and extract text locally in-browser.
+- Or provide a Google Scholar / ResearchGate profile URL, fetch abstracts, select relevant entries, and rank from those.
+- You can combine both PDFs and selected profile abstracts in one run.
+- During `npm run dev`, profile fetches are tunneled through a local Vite middleware endpoint to avoid browser CORS blocks.
+
 ## Matching Modes
 
 The app now supports:
