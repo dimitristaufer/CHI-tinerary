@@ -239,11 +239,8 @@ select {
   gap: 0.5rem;
 }
 
-.file-picker-actions {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.5rem;
-  align-items: center;
+.file-picker-wrap {
+  position: relative;
 }
 
 .profile-field {
@@ -460,9 +457,32 @@ select {
   font-size: 0.89rem;
 }
 
-.file-reset-btn {
-  min-width: 120px;
-  white-space: nowrap;
+.file-reset-icon-btn {
+  position: absolute;
+  top: 0.42rem;
+  right: 0.42rem;
+  width: 1.7rem;
+  height: 1.7rem;
+  min-width: 1.7rem;
+  border-radius: 999px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  line-height: 1;
+  background: #fff;
+  color: #3b3b3b;
+  border: 1px solid #cfcfcf;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.file-reset-icon-btn:hover:not(:disabled) {
+  background: #f6f6f6;
+}
+
+.file-reset-icon-btn:disabled {
+  opacity: 0.45;
 }
 
 .keyword-row {
@@ -957,10 +977,6 @@ button:disabled {
   }
 
   .profile-input-row {
-    grid-template-columns: 1fr;
-  }
-
-  .file-picker-actions {
     grid-template-columns: 1fr;
   }
 

@@ -629,8 +629,10 @@ function updateAbstractPreviewToggleButtonLabel() {
 
 function updateRunSelectedCount() {
   if (!runSelectedCount) return;
-  const selected = getSelectedProfileAbstracts().length;
-  runSelectedCount.textContent = `${selected} profile abstracts selected`;
+  const pdfCount = Array.from(fileInput?.files || []).length;
+  const abstractCount = getSelectedProfileAbstracts().length;
+  const keywordCount = parseCustomKeywords(keywordInput?.value || '').length;
+  runSelectedCount.textContent = `${pdfCount} PDFs · ${abstractCount} profile abstracts · ${keywordCount} boosted keywords`;
 }
 
 function updateAuthorCandidatesCount() {
@@ -1280,6 +1282,7 @@ function updateFileSelectionText() {
     return;
   }
   fileSelection.textContent = `${files.length} files selected`;
+  updateRunSelectedCount();
 }
 
 function normalizeCalendarKeyPart(value) {
@@ -1364,6 +1367,8 @@ function renderBoostedKeywords() {
     chip.append(text, remove);
     boostedKeywordsList.appendChild(chip);
   }
+
+  updateRunSelectedCount();
 }
 
 async function refreshModelCacheUi({ forceUi = false } = {}) {
