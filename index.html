@@ -69,7 +69,7 @@
               data-source-tab="profile"
               tabindex="-1"
             >
-              Google Scholar / ResearchGate
+              Author Lookup
             </button>
             <button
               id="source-tab-keywords"
@@ -115,29 +115,37 @@
             data-source-panel="profile"
           >
             <div class="profile-field">
-              <label for="profile-url">Google Scholar or ResearchGate profile (optional)</label>
+              <label for="profile-author-query">Author name</label>
               <div class="profile-input-row">
                 <input
-                  id="profile-url"
-                  name="profile_url"
-                  type="url"
-                  placeholder="https://scholar.google.com/citations?user=... or https://www.researchgate.net/profile/..."
-                />
-                <button id="fetch-profile-btn" type="button" class="profile-fetch-btn">Fetch abstracts</button>
-              </div>
-              <div class="profile-author-row">
-                <label for="profile-author-name">Author name (optional, recommended for Scholar)</label>
-                <input
-                  id="profile-author-name"
-                  name="profile_author_name"
+                  id="profile-author-query"
+                  name="profile_author_query"
                   type="text"
                   autocomplete="name"
                   placeholder="e.g., Andrew F. Monk"
                 />
+                <button id="fetch-profile-btn" type="button" class="profile-fetch-btn">Fetch abstracts</button>
+              </div>
+              <div class="profile-author-row">
+                <label for="profile-author-hint">Disambiguation hint (optional)</label>
+                <input
+                  id="profile-author-hint"
+                  name="profile_author_hint"
+                  type="text"
+                  placeholder="e.g., TU Berlin, UCL, HCI"
+                />
               </div>
               <p id="profile-fetch-status" class="muted profile-fetch-status">
-                Optionally fetch abstracts from a profile, select relevant ones, then run ranking.
+                Find your author profile, confirm the match, then fetch metadata abstracts.
               </p>
+            </div>
+
+            <div id="profile-author-candidates-panel" class="profile-author-candidates-panel hidden">
+              <div class="profile-author-candidates-header">
+                <h3>Author Matches</h3>
+                <p id="profile-author-candidates-count" class="muted profile-author-candidates-count"></p>
+              </div>
+              <div id="profile-author-candidates-list" class="profile-author-candidates-list"></div>
             </div>
 
             <div id="profile-abstracts-panel" class="profile-abstracts-panel hidden">
