@@ -45,7 +45,6 @@ const fileSelection = document.getElementById('file-selection');
 const sourceTabButtons = Array.from(document.querySelectorAll('[data-source-tab]'));
 const sourcePanels = Array.from(document.querySelectorAll('[data-source-panel]'));
 const profileAuthorQueryInput = document.getElementById('profile-author-query');
-const profileAuthorHintInput = document.getElementById('profile-author-hint');
 const fetchProfileBtn = document.getElementById('fetch-profile-btn');
 const profileFetchStatus = document.getElementById('profile-fetch-status');
 const profileAuthorCandidatesPanel = document.getElementById('profile-author-candidates-panel');
@@ -88,6 +87,7 @@ let fetchedProfileAbstracts = [];
 let fetchedAuthorCandidates = [];
 let selectedAuthorCandidateId = '';
 let activeAuthorLookupKey = '';
+let profileFetchRunSeq = 0;
 const selectedProfileAbstractIds = new Set();
 let modelDownloadRequestId = null;
 let modelDownloadBusy = false;
@@ -95,6 +95,8 @@ let semanticModelAvailable = false;
 let modelAvailabilityRefreshSeq = 0;
 const semanticFallbackNotedRequests = new Set();
 const downloadedCalendarItems = loadDownloadedCalendarItems();
+const authorCandidatesCache = new Map();
+const authorAbstractsCache = new Map();
 
 scoreWorker.onmessage = (event) => {
   const payload = event.data || {};
@@ -305,10 +307,6 @@ function normalizeAuthorNameHint(input) {
   return compactWhitespace(String(input || ''));
 }
 
-function normalizeDisambiguationHint(input) {
-  return compactWhitespace(String(input || ''));
-}
-
 function toOpenAlexAuthorId(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
@@ -368,39 +366,6 @@ function authorMatchScore(author, targetName) {
   return score;
 }
 
-function authorHintScore(author, disambiguationHint) {
-  const normalizedHint = normalizeDisambiguationHint(disambiguationHint).toLowerCase();
-  if (!normalizedHint) return 0;
-  const hintTokens = normalizedHint.split(/\s+/).filter((token) => token.length >= 3);
-  if (!hintTokens.length) return 0;
-
-  const concepts = Array.isArray(author?.x_concepts)
-    ? author.x_concepts
-        .slice(0, 10)
-        .map((entry) => compactWhitespace(entry?.display_name || ''))
-        .filter(Boolean)
-        .join(' ')
-    : '';
-  const institution = compactWhitespace(author?.last_known_institution?.display_name || '');
-  const haystack = compactWhitespace(
-    [
-      author?.display_name || '',
-      institution,
-      author?.orcid || '',
-      concepts,
-      author?.works_api_url || '',
-    ].join(' ')
-  ).toLowerCase();
-  if (!haystack) return 0;
-
-  let score = 0;
-  if (haystack.includes(normalizedHint)) score += 6;
-  for (const token of hintTokens) {
-    if (haystack.includes(token)) score += 2;
-  }
-  return score;
-}
-
 function openAlexConceptPreview(author) {
   if (!Array.isArray(author?.x_concepts)) return '';
   return author.x_concepts
@@ -410,12 +375,10 @@ function openAlexConceptPreview(author) {
     .join(', ');
 }
 
-function toOpenAlexCandidate(author, authorQuery, disambiguationHint = '') {
+function toOpenAlexCandidate(author, authorQuery) {
   const id = toOpenAlexAuthorId(author?.id);
   if (!id) return null;
-  const nameScore = authorMatchScore(author, authorQuery);
-  const hintScore = authorHintScore(author, disambiguationHint);
-  const score = nameScore + hintScore;
+  const score = authorMatchScore(author, authorQuery);
   const institution = compactWhitespace(author?.last_known_institution?.display_name || '');
   const concepts = openAlexConceptPreview(author);
   return {
@@ -438,16 +401,13 @@ async function fetchOpenAlexJson(url) {
   return response.json();
 }
 
-async function fetchOpenAlexAuthorCandidates(authorName, { disambiguationHint = '', perPage = 10 } = {}) {
+async function fetchOpenAlexAuthorCandidates(authorName, { perPage = 10 } = {}) {
   const normalizedAuthorName = normalizeAuthorNameHint(authorName);
   if (!normalizedAuthorName || normalizedAuthorName.length < 3) {
     return [];
   }
 
-  const searchQuery = normalizeDisambiguationHint(disambiguationHint)
-    ? `${normalizedAuthorName} ${normalizeDisambiguationHint(disambiguationHint)}`
-    : normalizedAuthorName;
-  const authorSearchUrl = `https://api.openalex.org/authors?search=${encodeURIComponent(searchQuery)}&per-page=${Math.min(
+  const authorSearchUrl = `https://api.openalex.org/authors?search=${encodeURIComponent(normalizedAuthorName)}&per-page=${Math.min(
     20,
     Math.max(5, Number(perPage) || 10)
   )}`;
@@ -458,7 +418,7 @@ async function fetchOpenAlexAuthorCandidates(authorName, { disambiguationHint = 
   }
 
   return rawCandidates
-    .map((author) => toOpenAlexCandidate(author, normalizedAuthorName, disambiguationHint))
+    .map((author) => toOpenAlexCandidate(author, normalizedAuthorName))
     .filter(Boolean)
     .sort((left, right) => right.score - left.score);
 }
@@ -503,8 +463,8 @@ async function fetchOpenAlexAbstractsByAuthorId(authorId, { source = 'openalex',
   return results;
 }
 
-function buildAuthorLookupKey(authorQuery, disambiguationHint = '') {
-  return `${normalizeAuthorNameHint(authorQuery).toLowerCase()}::${normalizeDisambiguationHint(disambiguationHint).toLowerCase()}`;
+function buildAuthorLookupKey(authorQuery) {
+  return normalizeAuthorNameHint(authorQuery).toLowerCase();
 }
 
 function tryParseProfileLikeUrl(raw) {
@@ -523,9 +483,8 @@ function tryParseProfileLikeUrl(raw) {
   }
 }
 
-function resolveAuthorLookupInput(rawAuthorQuery, rawHint) {
+function resolveAuthorLookupInput(rawAuthorQuery) {
   const authorQuery = normalizeAuthorNameHint(rawAuthorQuery);
-  const disambiguationHint = normalizeDisambiguationHint(rawHint);
 
   if (!authorQuery) {
     throw new Error('Enter an author name.');
@@ -536,7 +495,7 @@ function resolveAuthorLookupInput(rawAuthorQuery, rawHint) {
     if (authorQuery.length < 3) {
       throw new Error('Author name must be at least 3 characters.');
     }
-    return { authorQuery, disambiguationHint };
+    return { authorQuery };
   }
 
   const host = parsedUrl.hostname.toLowerCase();
@@ -548,7 +507,7 @@ function resolveAuthorLookupInput(rawAuthorQuery, rawHint) {
     if (parsedName.length < 3) {
       throw new Error('Could not infer an author name from this ResearchGate URL. Enter the author name instead.');
     }
-    return { authorQuery: parsedName, disambiguationHint };
+    return { authorQuery: parsedName };
   }
   throw new Error('Enter an author name, or a ResearchGate profile URL.');
 }
@@ -569,6 +528,30 @@ function clearAuthorCandidates({ keepLookupKey = false } = {}) {
     activeAuthorLookupKey = '';
   }
   renderAuthorCandidates();
+}
+
+function clearFetchedProfileAbstracts() {
+  fetchedProfileAbstracts = [];
+  selectedProfileAbstractIds.clear();
+  renderProfileAbstracts();
+}
+
+function applyFetchedProfileAbstracts(abstracts, sourceLabel) {
+  fetchedProfileAbstracts = abstracts.slice(0, MAX_PROFILE_ABSTRACTS).map((item, idx) => ({
+    id: `${idx + 1}`,
+    title: compactWhitespace(item.title).slice(0, 240),
+    abstract: compactWhitespace(item.abstract).slice(0, 3000),
+    sourceUrl: item.sourceUrl || '',
+    source: item.source || '',
+    sourceLabel,
+  }));
+
+  selectedProfileAbstractIds.clear();
+  for (const item of fetchedProfileAbstracts) {
+    selectedProfileAbstractIds.add(item.id);
+  }
+
+  renderProfileAbstracts();
 }
 
 function updateAuthorCandidatesCount() {
@@ -629,38 +612,56 @@ async function fetchAbstractsForAuthorCandidate(candidate) {
   if (!candidate?.id) {
     return [];
   }
-  return fetchOpenAlexAbstractsByAuthorId(candidate.id, {
+  const cacheKey = candidate.id;
+  if (authorAbstractsCache.has(cacheKey)) {
+    return authorAbstractsCache.get(cacheKey);
+  }
+
+  const abstracts = await fetchOpenAlexAbstractsByAuthorId(candidate.id, {
     source: 'openalex_author',
     fallbackUrl: `https://openalex.org/${candidate.id}`,
   });
+  authorAbstractsCache.set(cacheKey, abstracts);
+  return abstracts;
 }
 
-async function fetchAbstractsFromCandidates(candidates, preferredCandidateId, allowFallback = false) {
-  const preferred = candidates.find((candidate) => candidate.id === preferredCandidateId) || candidates[0] || null;
-  if (!preferred) {
-    return { matchedCandidate: null, abstracts: [], attempts: 0 };
+async function getAuthorCandidatesForQuery(authorQuery, { forceRefresh = false } = {}) {
+  const cacheKey = buildAuthorLookupKey(authorQuery);
+  if (!forceRefresh && authorCandidatesCache.has(cacheKey)) {
+    return authorCandidatesCache.get(cacheKey);
+  }
+  const candidates = (await fetchOpenAlexAuthorCandidates(authorQuery, { perPage: 12 })).slice(0, 8);
+  authorCandidatesCache.set(cacheKey, candidates);
+  return candidates;
+}
+
+async function fetchAndRenderAbstractsForSelectedCandidate({ runSeq = null } = {}) {
+  const selectedCandidate = getSelectedAuthorCandidate();
+  if (!selectedCandidate) return false;
+
+  updateProfileFetchStatus(`Fetching abstracts for ${selectedCandidate.displayName}...`);
+  appendStatusItem(`Fetching OpenAlex abstracts for ${selectedCandidate.displayName}`);
+  const abstracts = await fetchAbstractsForAuthorCandidate(selectedCandidate);
+  if (runSeq != null && runSeq !== profileFetchRunSeq) {
+    return false;
   }
 
-  const ordered = [preferred];
-  if (allowFallback) {
-    for (const candidate of candidates) {
-      if (candidate.id !== preferred.id) {
-        ordered.push(candidate);
-      }
-    }
+  if (!abstracts.length) {
+    clearFetchedProfileAbstracts();
+    updateProfileFetchStatus(
+      `No abstracts were found for ${selectedCandidate.displayName}. Select another match to refresh.`,
+      true
+    );
+    return false;
   }
 
-  let attempts = 0;
-  for (const candidate of ordered) {
-    attempts += 1;
-    const abstracts = await fetchAbstractsForAuthorCandidate(candidate);
-    if (abstracts.length) {
-      return { matchedCandidate: candidate, abstracts, attempts };
-    }
-    if (!allowFallback) break;
-  }
-
-  return { matchedCandidate: preferred, abstracts: [], attempts };
+  const sourceLabel = `OpenAlex metadata (${selectedCandidate.displayName})`;
+  applyFetchedProfileAbstracts(abstracts, sourceLabel);
+  updateProfileFetchStatus(
+    `Fetched ${fetchedProfileAbstracts.length} abstracts from ${selectedCandidate.displayName}. Select relevant abstracts and click Run.`
+  );
+  appendStatusItem(`Fetched ${fetchedProfileAbstracts.length} abstracts from ${sourceLabel}.`);
+  return true;
 }
 
 function updateProfileFetchStatus(text, isError = false) {
@@ -1551,26 +1552,20 @@ boostedKeywordsList.addEventListener('click', (event) => {
 
 if (fetchProfileBtn) {
   fetchProfileBtn.addEventListener('click', async () => {
+    const runSeq = ++profileFetchRunSeq;
     try {
-      const { authorQuery, disambiguationHint } = resolveAuthorLookupInput(
-        profileAuthorQueryInput?.value,
-        profileAuthorHintInput?.value
-      );
-      const lookupKey = buildAuthorLookupKey(authorQuery, disambiguationHint);
+      const { authorQuery } = resolveAuthorLookupInput(profileAuthorQueryInput?.value);
+      const lookupKey = buildAuthorLookupKey(authorQuery);
       const shouldRefreshCandidates = lookupKey !== activeAuthorLookupKey || !fetchedAuthorCandidates.length;
 
       fetchProfileBtn.disabled = true;
 
       if (shouldRefreshCandidates) {
-        fetchedProfileAbstracts = [];
-        selectedProfileAbstractIds.clear();
-        renderProfileAbstracts();
+        clearFetchedProfileAbstracts();
         updateProfileFetchStatus('Finding author matches...');
-        appendStatusItem(
-          `Resolving author matches for "${authorQuery}"${disambiguationHint ? ` (${disambiguationHint})` : ''}`
-        );
-        const candidates = await fetchOpenAlexAuthorCandidates(authorQuery, { disambiguationHint, perPage: 12 });
-        fetchedAuthorCandidates = candidates.slice(0, 8);
+        appendStatusItem(`Resolving author matches for "${authorQuery}"`);
+        fetchedAuthorCandidates = await getAuthorCandidatesForQuery(authorQuery);
+        if (runSeq !== profileFetchRunSeq) return;
         selectedAuthorCandidateId = fetchedAuthorCandidates[0]?.id || '';
         activeAuthorLookupKey = lookupKey;
         renderAuthorCandidates();
@@ -1578,77 +1573,28 @@ if (fetchProfileBtn) {
 
       const selectedCandidate = getSelectedAuthorCandidate();
       if (!selectedCandidate) {
-        fetchedProfileAbstracts = [];
+        clearFetchedProfileAbstracts();
         clearAuthorCandidates({ keepLookupKey: true });
-        selectedProfileAbstractIds.clear();
-        renderProfileAbstracts();
-        updateProfileFetchStatus('No matching OpenAlex author profiles found. Add a more specific name or hint.', true);
+        updateProfileFetchStatus('No matching OpenAlex author profiles found. Enter a more specific author name.', true);
         return;
       }
 
-      updateProfileFetchStatus(`Fetching abstracts for ${selectedCandidate.displayName}...`);
-      appendStatusItem(`Fetching OpenAlex abstracts for ${selectedCandidate.displayName}`);
-      const { matchedCandidate, abstracts, attempts } = await fetchAbstractsFromCandidates(
-        fetchedAuthorCandidates,
-        selectedAuthorCandidateId,
-        shouldRefreshCandidates
-      );
-
-      if (!matchedCandidate || !abstracts.length) {
-        fetchedProfileAbstracts = [];
-        selectedProfileAbstractIds.clear();
-        renderProfileAbstracts();
-        updateProfileFetchStatus(
-          `No abstracts were found for ${selectedCandidate.displayName}. Select another match and retry.`,
-          true
-        );
-        return;
-      }
-
-      selectedAuthorCandidateId = matchedCandidate.id;
-      renderAuthorCandidates();
-      const sourceLabel = `OpenAlex metadata (${matchedCandidate.displayName})`;
-      fetchedProfileAbstracts = abstracts.slice(0, MAX_PROFILE_ABSTRACTS).map((item, idx) => ({
-        id: `${idx + 1}`,
-        title: compactWhitespace(item.title).slice(0, 240),
-        abstract: compactWhitespace(item.abstract).slice(0, 3000),
-        sourceUrl: item.sourceUrl || '',
-        source: item.source || '',
-        sourceLabel,
-      }));
-
-      selectedProfileAbstractIds.clear();
-      for (const item of fetchedProfileAbstracts) {
-        selectedProfileAbstractIds.add(item.id);
-      }
-
-      renderProfileAbstracts();
-      const switchedCandidate = matchedCandidate.id !== selectedCandidate.id;
-      const fallbackSuffix =
-        switchedCandidate && shouldRefreshCandidates
-          ? ` Auto-switched to ${matchedCandidate.displayName} because the first match had no usable abstracts.`
-          : '';
-      updateProfileFetchStatus(
-        `Fetched ${fetchedProfileAbstracts.length} abstracts from ${matchedCandidate.displayName}. Select relevant abstracts and click Run.${fallbackSuffix}`
-      );
-      appendStatusItem(
-        `Fetched ${fetchedProfileAbstracts.length} abstracts from ${sourceLabel}${attempts > 1 ? ` after checking ${attempts} matches` : ''}.`
-      );
+      await fetchAndRenderAbstractsForSelectedCandidate({ runSeq });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      fetchedProfileAbstracts = [];
-      selectedProfileAbstractIds.clear();
-      renderProfileAbstracts();
+      clearFetchedProfileAbstracts();
       updateProfileFetchStatus(message, true);
       appendStatusItem(`Profile fetch error: ${message}`);
     } finally {
-      fetchProfileBtn.disabled = false;
+      if (runSeq === profileFetchRunSeq) {
+        fetchProfileBtn.disabled = false;
+      }
     }
   });
 }
 
 if (profileAuthorCandidatesList) {
-  profileAuthorCandidatesList.addEventListener('change', (event) => {
+  profileAuthorCandidatesList.addEventListener('change', async (event) => {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) return;
     if (target.type !== 'radio') return;
@@ -1656,26 +1602,34 @@ if (profileAuthorCandidatesList) {
     if (!authorId) return;
     selectedAuthorCandidateId = authorId;
     updateAuthorCandidatesCount();
-    updateProfileFetchStatus('Author match selected. Click "Fetch abstracts" to load this author.');
+    const runSeq = ++profileFetchRunSeq;
+    if (fetchProfileBtn) {
+      fetchProfileBtn.disabled = true;
+    }
+
+    try {
+      await fetchAndRenderAbstractsForSelectedCandidate({ runSeq });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      clearFetchedProfileAbstracts();
+      updateProfileFetchStatus(message, true);
+      appendStatusItem(`Profile fetch error: ${message}`);
+    } finally {
+      if (fetchProfileBtn && runSeq === profileFetchRunSeq) {
+        fetchProfileBtn.disabled = false;
+      }
+    }
   });
 }
 
 if (profileAuthorQueryInput) {
   profileAuthorQueryInput.addEventListener('input', () => {
+    profileFetchRunSeq += 1;
+    if (fetchProfileBtn) {
+      fetchProfileBtn.disabled = false;
+    }
     clearAuthorCandidates();
-    fetchedProfileAbstracts = [];
-    selectedProfileAbstractIds.clear();
-    renderProfileAbstracts();
-    updateProfileFetchStatus('Find your author profile, confirm the match, then fetch metadata abstracts.');
-  });
-}
-
-if (profileAuthorHintInput) {
-  profileAuthorHintInput.addEventListener('input', () => {
-    clearAuthorCandidates();
-    fetchedProfileAbstracts = [];
-    selectedProfileAbstractIds.clear();
-    renderProfileAbstracts();
+    clearFetchedProfileAbstracts();
     updateProfileFetchStatus('Find your author profile, confirm the match, then fetch metadata abstracts.');
   });
 }

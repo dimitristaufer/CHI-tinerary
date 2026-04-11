@@ -14,7 +14,7 @@ npm run build
 ## Inputs
 
 - Upload up to 10 PDFs and extract text locally in-browser.
-- Or enter an author name, disambiguate from ranked OpenAlex author matches, fetch abstracts, select relevant entries, and rank from those.
+- Or enter an author name, choose the correct OpenAlex author match, fetch abstracts, select relevant entries, and rank from those.
 - You can combine both PDFs and selected profile abstracts in one run.
 - Browser-only profile lookup is now OpenAlex metadata-first to avoid Scholar/ResearchGate scraping blocks on static GitHub Pages deployments.
 - ResearchGate profile URLs can still be pasted to infer a name, but Google Scholar URLs are intentionally not scraped in browser-only mode.

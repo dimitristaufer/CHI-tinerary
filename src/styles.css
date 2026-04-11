@@ -251,11 +251,6 @@ select {
   align-items: center;
 }
 
-.profile-author-row {
-  display: grid;
-  gap: 0.35rem;
-}
-
 .profile-fetch-btn {
   min-width: 170px;
   padding: 0.72rem 0.95rem;
