@@ -1,3 +1,51 @@
+@font-face {
+  font-family: 'inter';
+  src: url('/fonts/inter/inter-regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'inter';
+  src: url('/fonts/inter/inter-medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'inter';
+  src: url('/fonts/inter/inter-semibold.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'inter';
+  src: url('/fonts/inter/inter-bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'inter';
+  src: url('/fonts/inter/inter-extrabold.woff2') format('woff2');
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'inter';
+  src: url('/fonts/inter/inter-black.woff2') format('woff2');
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --bg: #f1f1f1;
   --surface: #fafafa;
@@ -17,7 +65,7 @@
 
 body {
   margin: 0;
-  font-family: 'Avenir Next', 'Segoe UI', sans-serif;
+  font-family: 'inter', 'Segoe UI', sans-serif;
   color: var(--ink);
   background: linear-gradient(180deg, #f7f7f7 0%, var(--bg) 100%);
   min-height: 100vh;
@@ -84,7 +132,8 @@ body {
 
 h1 {
   margin: 0.4rem 0;
-  font-size: clamp(1.55rem, 2.8vw, 2.35rem);
+  font-size: clamp(1.85rem, 3.4vw, 2.9rem);
+  font-weight: 900;
   line-height: 1.15;
 }
 
@@ -426,7 +475,7 @@ select {
 .model-download-panel {
   display: grid;
   gap: 0.35rem;
-  align-self: center;
+  align-self: end;
 }
 
 .model-cache-actions {
@@ -727,7 +776,7 @@ button:disabled {
   min-width: 220px;
   justify-content: center;
   align-items: center;
-  align-self: center;
+  align-self: end;
   padding: 0.84rem 1.45rem;
   font-size: 1rem;
   background: linear-gradient(135deg, #2d2d2d 0%, #101010 100%);
