@@ -47,85 +47,149 @@
 
       <section class="panel">
         <form id="analyze-form" class="form-grid">
-          <div class="profile-field">
-            <label for="profile-url">Google Scholar or ResearchGate profile (optional)</label>
-            <div class="profile-input-row">
+          <div class="input-tabs" role="tablist" aria-label="Input sources">
+            <button
+              id="source-tab-pdfs"
+              class="source-tab is-active"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="source-panel-pdfs"
+              data-source-tab="pdfs"
+            >
+              PDFs
+            </button>
+            <button
+              id="source-tab-profile"
+              class="source-tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="source-panel-profile"
+              data-source-tab="profile"
+              tabindex="-1"
+            >
+              Google Scholar / ResearchGate
+            </button>
+            <button
+              id="source-tab-keywords"
+              class="source-tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="source-panel-keywords"
+              data-source-tab="keywords"
+              tabindex="-1"
+            >
+              Boost Keywords
+            </button>
+          </div>
+
+          <div
+            id="source-panel-pdfs"
+            class="source-panel is-active"
+            role="tabpanel"
+            aria-labelledby="source-tab-pdfs"
+            data-source-panel="pdfs"
+          >
+            <div class="file-field">
+              <label for="pdfs">Select up to 10 PDF files</label>
               <input
-                id="profile-url"
-                name="profile_url"
-                type="url"
-                placeholder="https://scholar.google.com/citations?user=... or https://www.researchgate.net/profile/..."
+                id="pdfs"
+                class="file-input-native"
+                name="pdfs"
+                type="file"
+                accept="application/pdf,.pdf"
+                multiple
               />
-              <button id="fetch-profile-btn" type="button" class="profile-fetch-btn">Fetch abstracts</button>
+              <label for="pdfs" class="file-picker-btn">Choose PDF files</label>
+              <p id="file-selection" class="muted file-selection">No PDFs selected yet.</p>
             </div>
-            <p id="profile-fetch-status" class="muted profile-fetch-status">
-              Optionally fetch abstracts from a profile, select relevant ones, then run ranking.
-            </p>
           </div>
 
-          <div id="profile-abstracts-panel" class="profile-abstracts-panel hidden">
-            <div class="profile-abstracts-header">
-              <h3>Profile Abstract Selection</h3>
-              <p id="profile-abstracts-count" class="muted profile-abstracts-count"></p>
-            </div>
-            <div class="profile-abstracts-actions">
-              <button id="select-all-abstracts-btn" type="button" class="secondary-btn">Select all</button>
-              <button id="clear-all-abstracts-btn" type="button" class="secondary-btn">Clear all</button>
-            </div>
-            <div id="profile-abstracts-list" class="profile-abstracts-list"></div>
-          </div>
-
-          <div class="file-field">
-            <label for="pdfs">Select up to 10 PDF files</label>
-            <input
-              id="pdfs"
-              class="file-input-native"
-              name="pdfs"
-              type="file"
-              accept="application/pdf,.pdf"
-              multiple
-            />
-            <label for="pdfs" class="file-picker-btn">Choose PDF files</label>
-            <p id="file-selection" class="muted file-selection">No PDFs selected yet.</p>
-          </div>
-
-          <div class="keyword-row">
-            <div class="keyword-input-wrap">
-              <label for="custom-keywords">Boost Keywords (comma/newline separated, auto-refreshes)</label>
-              <textarea
-                id="custom-keywords"
-                name="custom_keywords"
-                rows="3"
-              ></textarea>
-            </div>
-            <aside class="boosted-keywords-panel">
-              <h3>Boosted Keywords</h3>
-              <div id="boosted-keywords-list" class="boosted-keywords-list">
-                <p class="muted boosted-keywords-empty">No boosted keywords yet.</p>
+          <div
+            id="source-panel-profile"
+            class="source-panel hidden"
+            role="tabpanel"
+            aria-labelledby="source-tab-profile"
+            data-source-panel="profile"
+          >
+            <div class="profile-field">
+              <label for="profile-url">Google Scholar or ResearchGate profile (optional)</label>
+              <div class="profile-input-row">
+                <input
+                  id="profile-url"
+                  name="profile_url"
+                  type="url"
+                  placeholder="https://scholar.google.com/citations?user=... or https://www.researchgate.net/profile/..."
+                />
+                <button id="fetch-profile-btn" type="button" class="profile-fetch-btn">Fetch abstracts</button>
               </div>
-            </aside>
+              <p id="profile-fetch-status" class="muted profile-fetch-status">
+                Optionally fetch abstracts from a profile, select relevant ones, then run ranking.
+              </p>
+            </div>
+
+            <div id="profile-abstracts-panel" class="profile-abstracts-panel hidden">
+              <div class="profile-abstracts-header">
+                <h3>Profile Abstract Selection</h3>
+                <p id="profile-abstracts-count" class="muted profile-abstracts-count"></p>
+              </div>
+              <div class="profile-abstracts-actions">
+                <button id="select-all-abstracts-btn" type="button" class="secondary-btn">Select all</button>
+                <button id="clear-all-abstracts-btn" type="button" class="secondary-btn">Clear all</button>
+              </div>
+              <div id="profile-abstracts-list" class="profile-abstracts-list"></div>
+            </div>
           </div>
 
-          <div class="matching-row">
-            <div class="matching-mode-field">
-              <label for="matching-mode">Matching Mode</label>
-              <select id="matching-mode" name="matching_mode">
-                <option value="tfidf" selected>TF-IDF (Lexical)</option>
-                <option value="semantic">Semantic Embeddings</option>
-                <option value="hybrid">Hybrid (TF-IDF + Semantic)</option>
-              </select>
-            </div>
-            <div class="model-download-panel">
-              <div class="model-cache-actions">
-                <button id="download-model-btn" class="download-model-btn" type="button">Download semantic model</button>
+          <div
+            id="source-panel-keywords"
+            class="source-panel hidden"
+            role="tabpanel"
+            aria-labelledby="source-tab-keywords"
+            data-source-panel="keywords"
+          >
+            <div class="keyword-row">
+              <div class="keyword-input-wrap">
+                <label for="custom-keywords">Boost Keywords (comma/newline separated, auto-refreshes)</label>
+                <textarea
+                  id="custom-keywords"
+                  name="custom_keywords"
+                  rows="3"
+                ></textarea>
               </div>
-              <div id="model-download-progress-wrap" class="model-download-progress-wrap hidden" aria-live="polite">
-                <progress id="model-download-progress" max="100" value="0"></progress>
-                <span id="model-download-progress-text">0%</span>
-              </div>
+              <aside class="boosted-keywords-panel">
+                <h3>Boosted Keywords</h3>
+                <div id="boosted-keywords-list" class="boosted-keywords-list">
+                  <p class="muted boosted-keywords-empty">No boosted keywords yet.</p>
+                </div>
+              </aside>
             </div>
-            <p id="model-download-status" class="hidden" aria-live="polite"></p>
-            <button id="run-btn" class="run-btn" type="submit">Run</button>
+          </div>
+
+          <div class="matching-controls-wrap">
+            <div class="matching-row">
+              <div class="matching-mode-field">
+                <label for="matching-mode">Matching Mode</label>
+                <select id="matching-mode" name="matching_mode">
+                  <option value="tfidf" selected>TF-IDF (Lexical)</option>
+                  <option value="semantic">Semantic Embeddings</option>
+                  <option value="hybrid">Hybrid (TF-IDF + Semantic)</option>
+                </select>
+              </div>
+              <div class="model-download-panel">
+                <div class="model-cache-actions">
+                  <button id="download-model-btn" class="download-model-btn" type="button">Download semantic model</button>
+                </div>
+                <div id="model-download-progress-wrap" class="model-download-progress-wrap hidden" aria-live="polite">
+                  <progress id="model-download-progress" max="100" value="0"></progress>
+                  <span id="model-download-progress-text">0%</span>
+                </div>
+              </div>
+              <p id="model-download-status" class="hidden" aria-live="polite"></p>
+              <button id="run-btn" class="run-btn" type="submit">Run</button>
+            </div>
           </div>
         </form>
       </section>

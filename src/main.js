@@ -44,6 +44,8 @@ const timeFormatter = new Intl.DateTimeFormat(undefined, {
 const form = document.getElementById('analyze-form');
 const fileInput = document.getElementById('pdfs');
 const fileSelection = document.getElementById('file-selection');
+const sourceTabButtons = Array.from(document.querySelectorAll('[data-source-tab]'));
+const sourcePanels = Array.from(document.querySelectorAll('[data-source-panel]'));
 const profileUrlInput = document.getElementById('profile-url');
 const fetchProfileBtn = document.getElementById('fetch-profile-btn');
 const profileFetchStatus = document.getElementById('profile-fetch-status');
@@ -163,6 +165,78 @@ function clearResults() {
 
 function clearStatusItems() {
   statusList.innerHTML = '';
+}
+
+function setActiveSourceTab(tabName, { focus = false } = {}) {
+  if (!sourceTabButtons.length || !sourcePanels.length) return;
+
+  let matchedTab = false;
+  for (const button of sourceTabButtons) {
+    const isActive = button.dataset.sourceTab === tabName;
+    button.classList.toggle('is-active', isActive);
+    button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    button.setAttribute('tabindex', isActive ? '0' : '-1');
+    if (isActive) {
+      matchedTab = true;
+      if (focus) {
+        button.focus();
+      }
+    }
+  }
+
+  if (!matchedTab) {
+    return;
+  }
+
+  for (const panel of sourcePanels) {
+    const isActive = panel.dataset.sourcePanel === tabName;
+    panel.classList.toggle('is-active', isActive);
+    panel.classList.toggle('hidden', !isActive);
+  }
+}
+
+function initializeSourceTabs() {
+  if (!sourceTabButtons.length || !sourcePanels.length) return;
+
+  const activeButton =
+    sourceTabButtons.find((button) => button.classList.contains('is-active')) || sourceTabButtons[0];
+
+  if (activeButton?.dataset?.sourceTab) {
+    setActiveSourceTab(activeButton.dataset.sourceTab);
+  }
+
+  for (const [index, button] of sourceTabButtons.entries()) {
+    button.addEventListener('click', () => {
+      const targetTab = button.dataset.sourceTab;
+      if (!targetTab) return;
+      setActiveSourceTab(targetTab);
+    });
+
+    button.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+        return;
+      }
+
+      event.preventDefault();
+      const lastIndex = sourceTabButtons.length - 1;
+      let nextIndex = index;
+
+      if (event.key === 'Home') {
+        nextIndex = 0;
+      } else if (event.key === 'End') {
+        nextIndex = lastIndex;
+      } else if (event.key === 'ArrowRight') {
+        nextIndex = index >= lastIndex ? 0 : index + 1;
+      } else if (event.key === 'ArrowLeft') {
+        nextIndex = index <= 0 ? lastIndex : index - 1;
+      }
+
+      const nextTab = sourceTabButtons[nextIndex]?.dataset?.sourceTab;
+      if (nextTab) {
+        setActiveSourceTab(nextTab, { focus: true });
+      }
+    });
+  }
 }
 
 async function loadScheduleIndex() {
@@ -1989,6 +2063,7 @@ form.addEventListener('submit', async (event) => {
 });
 
 (async () => {
+  initializeSourceTabs();
   renderBoostedKeywords();
   renderProfileAbstracts();
   updateFileSelectionText();
