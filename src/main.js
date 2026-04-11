@@ -47,6 +47,7 @@ const fileSelection = document.getElementById('file-selection');
 const sourceTabButtons = Array.from(document.querySelectorAll('[data-source-tab]'));
 const sourcePanels = Array.from(document.querySelectorAll('[data-source-panel]'));
 const profileUrlInput = document.getElementById('profile-url');
+const profileAuthorNameInput = document.getElementById('profile-author-name');
 const fetchProfileBtn = document.getElementById('fetch-profile-btn');
 const profileFetchStatus = document.getElementById('profile-fetch-status');
 const profileAbstractsPanel = document.getElementById('profile-abstracts-panel');
@@ -91,8 +92,63 @@ let modelAvailabilityRefreshSeq = 0;
 const semanticFallbackNotedRequests = new Set();
 const downloadedCalendarItems = loadDownloadedCalendarItems();
 const DEV_PROFILE_FETCH_PROXY_PATH = '/__fetch';
+const RAW_PROFILE_FETCH_PROXY_URL = String(import.meta.env.VITE_PROFILE_FETCH_PROXY_URL || '').trim();
+const PROFILE_FETCH_PROXY_URL = RAW_PROFILE_FETCH_PROXY_URL || (import.meta.env.DEV ? DEV_PROFILE_FETCH_PROXY_PATH : '');
 const rateLimitedProfileHosts = new Set();
 const profileFetchCache = new Map();
+const profileFetchDiagnostics = {
+  blocked: false,
+  networkFailures: 0,
+  successfulPages: 0,
+};
+
+function resetProfileFetchDiagnostics() {
+  profileFetchDiagnostics.blocked = false;
+  profileFetchDiagnostics.networkFailures = 0;
+  profileFetchDiagnostics.successfulPages = 0;
+}
+
+function isLikelyBlockedPayload(text) {
+  const normalized = compactWhitespace(text).toLowerCase();
+  if (!normalized) return false;
+  return (
+    (normalized.includes("we're sorry") && normalized.includes('automated queries')) ||
+    normalized.includes('securitycompromiseerror') ||
+    normalized.includes('anonymous access to domain') ||
+    normalized.includes('ddos attack suspected') ||
+    normalized.includes('target url returned error 403: forbidden')
+  );
+}
+
+function markBlockedByStatus(status, text = '') {
+  if ([401, 403, 451].includes(Number(status))) {
+    profileFetchDiagnostics.blocked = true;
+    return;
+  }
+  if (isLikelyBlockedPayload(text)) {
+    profileFetchDiagnostics.blocked = true;
+  }
+}
+
+function shouldShowProfileFetchBlockedHint() {
+  return (
+    profileFetchDiagnostics.successfulPages === 0 &&
+    (profileFetchDiagnostics.blocked || profileFetchDiagnostics.networkFailures > 0)
+  );
+}
+
+function buildProfileFetchBlockedMessage({ sourceLabel, host, hasAuthorNameHint }) {
+  if (host.includes('scholar.google.')) {
+    if (!hasAuthorNameHint) {
+      return 'Google Scholar blocks browser-only scraping on static sites. Add your full name in "Author name (optional)" and retry to use metadata fallback.';
+    }
+    return `Google Scholar blocked direct scraping, and metadata fallback returned no abstracts for ${sourceLabel}.`;
+  }
+  if (host === 'researchgate.net' || host.endsWith('.researchgate.net')) {
+    return 'ResearchGate blocked direct scraping, and metadata fallback returned no abstracts.';
+  }
+  return `Could not fetch abstracts from ${sourceLabel} due to browser-only source restrictions.`;
+}
 
 scoreWorker.onmessage = (event) => {
   const payload = event.data || {};
@@ -398,6 +454,10 @@ function parseResearchGateProfileName(profileUrl) {
   return '';
 }
 
+function normalizeAuthorNameHint(input) {
+  return compactWhitespace(String(input || ''));
+}
+
 function reconstructOpenAlexAbstract(invertedIndex) {
   if (!invertedIndex || typeof invertedIndex !== 'object') return '';
   const positioned = [];
@@ -442,13 +502,13 @@ async function fetchOpenAlexJson(url) {
   return response.json();
 }
 
-async function fetchResearchGateViaOpenAlex(profileUrl) {
-  const profileName = parseResearchGateProfileName(profileUrl);
-  if (!profileName || profileName.length < 3) {
+async function fetchOpenAlexAbstractsByAuthorName(authorName, { source = 'openalex', fallbackUrl = '' } = {}) {
+  const normalizedAuthorName = normalizeAuthorNameHint(authorName);
+  if (!normalizedAuthorName || normalizedAuthorName.length < 3) {
     return [];
   }
 
-  const authorSearchUrl = `https://api.openalex.org/authors?search=${encodeURIComponent(profileName)}&per-page=6`;
+  const authorSearchUrl = `https://api.openalex.org/authors?search=${encodeURIComponent(normalizedAuthorName)}&per-page=6`;
   const authorPayload = await fetchOpenAlexJson(authorSearchUrl);
   const candidates = Array.isArray(authorPayload?.results) ? authorPayload.results : [];
   if (!candidates.length) {
@@ -456,7 +516,7 @@ async function fetchResearchGateViaOpenAlex(profileUrl) {
   }
 
   const ranked = candidates
-    .map((author) => ({ author, score: authorMatchScore(author, profileName) }))
+    .map((author) => ({ author, score: authorMatchScore(author, normalizedAuthorName) }))
     .sort((left, right) => right.score - left.score);
   const best = ranked[0];
   if (!best || best.score < 3) {
@@ -483,7 +543,7 @@ async function fetchResearchGateViaOpenAlex(profileUrl) {
       work?.primary_location?.landing_page_url ||
       work?.doi ||
       work?.id ||
-      profileUrl;
+      fallbackUrl;
 
     const fingerprint = `${title.toLowerCase()}::${abstract.slice(0, 170).toLowerCase()}`;
     if (seen.has(fingerprint)) continue;
@@ -493,13 +553,29 @@ async function fetchResearchGateViaOpenAlex(profileUrl) {
       title,
       abstract,
       sourceUrl,
-      source: 'researchgate_openalex',
+      source,
       publicationYear: Number.isFinite(work?.publication_year) ? work.publication_year : null,
     });
     if (results.length >= MAX_PROFILE_ABSTRACTS) break;
   }
 
   return results;
+}
+
+async function fetchResearchGateViaOpenAlex(profileUrl, authorNameHint = '') {
+  const profileName = normalizeAuthorNameHint(authorNameHint) || parseResearchGateProfileName(profileUrl);
+  return fetchOpenAlexAbstractsByAuthorName(profileName, {
+    source: 'researchgate_openalex',
+    fallbackUrl: profileUrl,
+  });
+}
+
+async function fetchScholarViaOpenAlex(profileUrl, authorNameHint = '') {
+  const profileName = normalizeAuthorNameHint(authorNameHint);
+  return fetchOpenAlexAbstractsByAuthorName(profileName, {
+    source: 'google_scholar_openalex',
+    fallbackUrl: profileUrl,
+  });
 }
 
 function toJinaMirrorVariants(targetUrl) {
@@ -525,17 +601,17 @@ function isRateLimitedHost(urlValue) {
 }
 
 function buildFetchRequestUrl(targetUrl) {
-  if (!import.meta.env.DEV) {
+  if (!PROFILE_FETCH_PROXY_URL) {
     return targetUrl;
   }
-  const proxied = new URL(DEV_PROFILE_FETCH_PROXY_PATH, window.location.origin);
+  const proxied = new URL(PROFILE_FETCH_PROXY_URL, window.location.origin);
   proxied.searchParams.set('url', targetUrl);
   return proxied.toString();
 }
 
 async function fetchPageTextVariants(targetUrl) {
   const attempted = new Set();
-  const variants = import.meta.env.DEV
+  const variants = PROFILE_FETCH_PROXY_URL
     ? [targetUrl]
     : [targetUrl, ...toJinaMirrorVariants(targetUrl)];
   const pages = [];
@@ -549,10 +625,11 @@ async function fetchPageTextVariants(targetUrl) {
       if (profileFetchCache.has(requestUrl)) {
         const cached = profileFetchCache.get(requestUrl);
         if (cached?.ok) {
+          profileFetchDiagnostics.successfulPages += 1;
           pages.push({
             url: variant,
             text: cached.text,
-            viaProxy: variant !== targetUrl,
+            viaProxy: Boolean(PROFILE_FETCH_PROXY_URL) || variant !== targetUrl,
           });
         }
         continue;
@@ -572,18 +649,35 @@ async function fetchPageTextVariants(targetUrl) {
         continue;
       }
       if (!response.ok) {
+        let failureText = '';
+        try {
+          failureText = await response.text();
+        } catch {
+          // Ignore parse errors for failed responses.
+        }
+        markBlockedByStatus(response.status, failureText);
         profileFetchCache.set(requestUrl, { ok: false, status: response.status });
         continue;
       }
       const text = await response.text();
       if (!text) continue;
+      if (isLikelyBlockedPayload(text)) {
+        profileFetchDiagnostics.blocked = true;
+        profileFetchCache.set(requestUrl, { ok: false, status: response.status });
+        continue;
+      }
       profileFetchCache.set(requestUrl, { ok: true, text, status: response.status });
+      profileFetchDiagnostics.successfulPages += 1;
       pages.push({
         url: variant,
         text,
-        viaProxy: variant !== targetUrl,
+        viaProxy: Boolean(PROFILE_FETCH_PROXY_URL) || variant !== targetUrl,
       });
-    } catch {
+    } catch (error) {
+      const isAbort = Boolean(error && typeof error === 'object' && 'name' in error && error.name === 'AbortError');
+      if (!isAbort) {
+        profileFetchDiagnostics.networkFailures += 1;
+      }
       // Ignore and try fallback variant.
     }
   }
@@ -845,9 +939,9 @@ async function fetchScholarProfileAbstracts(profileUrl) {
   return sortByPublicationYearDesc(results);
 }
 
-async function fetchResearchGateProfileAbstracts(profileUrl) {
+async function fetchResearchGateProfileAbstracts(profileUrl, authorNameHint = '') {
   try {
-    const openAlexResults = await fetchResearchGateViaOpenAlex(profileUrl);
+    const openAlexResults = await fetchResearchGateViaOpenAlex(profileUrl, authorNameHint);
     if (openAlexResults.length) {
       return {
         sourceLabel: 'ResearchGate (OpenAlex metadata)',
@@ -907,15 +1001,26 @@ async function fetchResearchGateProfileAbstracts(profileUrl) {
   };
 }
 
-async function fetchProfileAbstracts(profileUrl) {
+async function fetchProfileAbstracts(profileUrl, { authorNameHint = '' } = {}) {
   const parsed = new URL(profileUrl);
   const host = parsed.hostname.toLowerCase();
+  const normalizedAuthorNameHint = normalizeAuthorNameHint(authorNameHint);
   if (host.includes('scholar.google.')) {
     const abstracts = await fetchScholarProfileAbstracts(profileUrl);
+    if (!abstracts.length && normalizedAuthorNameHint) {
+      try {
+        const openAlexResults = await fetchScholarViaOpenAlex(profileUrl, normalizedAuthorNameHint);
+        if (openAlexResults.length) {
+          return { sourceLabel: 'Google Scholar (OpenAlex metadata)', abstracts: openAlexResults };
+        }
+      } catch {
+        // Fall through to empty result.
+      }
+    }
     return { sourceLabel: 'Google Scholar', abstracts };
   }
   if (host === 'researchgate.net' || host.endsWith('.researchgate.net')) {
-    const result = await fetchResearchGateProfileAbstracts(profileUrl);
+    const result = await fetchResearchGateProfileAbstracts(profileUrl, normalizedAuthorNameHint);
     if (Array.isArray(result)) {
       return { sourceLabel: 'ResearchGate', abstracts: result };
     }
@@ -1817,13 +1922,16 @@ if (fetchProfileBtn) {
   fetchProfileBtn.addEventListener('click', async () => {
     try {
       const normalizedUrl = normalizeProfileUrl(profileUrlInput?.value);
+      const authorNameHint = normalizeAuthorNameHint(profileAuthorNameInput?.value);
+      const host = new URL(normalizedUrl).hostname.toLowerCase();
       rateLimitedProfileHosts.clear();
       profileFetchCache.clear();
+      resetProfileFetchDiagnostics();
       fetchProfileBtn.disabled = true;
       updateProfileFetchStatus('Fetching abstracts from profile...');
       appendStatusItem(`Fetching profile abstracts from ${normalizedUrl}`);
 
-      const { sourceLabel, abstracts } = await fetchProfileAbstracts(normalizedUrl);
+      const { sourceLabel, abstracts } = await fetchProfileAbstracts(normalizedUrl, { authorNameHint });
       if (!abstracts.length) {
         fetchedProfileAbstracts = [];
         selectedProfileAbstractIds.clear();
@@ -1831,6 +1939,20 @@ if (fetchProfileBtn) {
         if (rateLimitedProfileHosts.size > 0) {
           updateProfileFetchStatus(
             `No abstracts returned before source rate limit. Wait a bit and retry for ${sourceLabel}.`,
+            true
+          );
+        } else if (shouldShowProfileFetchBlockedHint()) {
+          updateProfileFetchStatus(
+            buildProfileFetchBlockedMessage({
+              sourceLabel,
+              host,
+              hasAuthorNameHint: Boolean(authorNameHint),
+            }),
+            true
+          );
+        } else if (host.includes('scholar.google.') && !authorNameHint) {
+          updateProfileFetchStatus(
+            'No abstracts were found on this Google Scholar profile. Add your full name in "Author name (optional)" and retry to use metadata fallback.',
             true
           );
         } else {

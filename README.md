@@ -16,7 +16,8 @@ npm run build
 - Upload up to 10 PDFs and extract text locally in-browser.
 - Or provide a Google Scholar / ResearchGate profile URL, fetch abstracts, select relevant entries, and rank from those.
 - You can combine both PDFs and selected profile abstracts in one run.
-- During `npm run dev`, profile fetches are tunneled through a local Vite middleware endpoint to avoid browser CORS blocks.
+- Profile fetching is browser-only. On static GitHub Pages deployments, Scholar/ResearchGate may block direct scraping.
+- For better browser-only reliability, use **Author name (optional)**. The app uses OpenAlex metadata as fallback when direct profile scraping is blocked.
 
 ## Matching Modes
 
