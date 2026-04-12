@@ -93,7 +93,6 @@
             data-source-panel="pdfs"
           >
             <div class="file-field">
-              <label for="pdfs">Select up to 10 PDF files</label>
               <input
                 id="pdfs"
                 class="file-input-native"
@@ -103,18 +102,19 @@
                 multiple
               />
               <div class="file-picker-wrap">
-                <label for="pdfs" class="file-picker-btn">Choose PDF files</label>
+                <label for="pdfs" class="file-picker-btn">Choose PDFs</label>
                 <button
                   id="clear-pdfs-btn"
                   type="button"
                   class="file-reset-icon-btn"
                   aria-label="Clear selected PDFs"
                   title="Clear selected PDFs"
+                  hidden
                 >
-                  &times;
+                  <span class="file-reset-icon-glyph" aria-hidden="true">&times;</span>
                 </button>
               </div>
-              <p id="file-selection" class="muted file-selection">No PDFs selected yet.</p>
+              <p id="file-selection" class="muted file-selection" hidden></p>
             </div>
           </div>
 
@@ -133,12 +133,11 @@
                   name="profile_author_query"
                   type="text"
                   autocomplete="name"
-                  placeholder="e.g., Andrew F. Monk"
                 />
                 <button id="fetch-profile-btn" type="button" class="profile-fetch-btn">Find author</button>
               </div>
               <p id="profile-fetch-status" class="muted profile-fetch-status">
-                Find your author profile, confirm the match, then fetch metadata abstracts.
+                Find your profile and fetch paper abstracts.
               </p>
             </div>
 

@@ -5,7 +5,6 @@ import { semanticModelUrl } from './shared/semantic-config.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
-const MAX_PDFS = 10;
 const MAX_PROFILE_ABSTRACTS = 20;
 const PROFILE_ABSTRACT_PREVIEW_WORDS = 20;
 const RECENT_ABSTRACT_LOOKBACK_YEARS = 5;
@@ -261,7 +260,6 @@ async function loadScheduleIndex() {
 
 function validateUploads(files, { allowEmpty = false } = {}) {
   if (!files.length && !allowEmpty) throw new Error('Upload at least one PDF or select profile abstracts.');
-  if (files.length > MAX_PDFS) throw new Error(`Upload at most ${MAX_PDFS} PDFs.`);
 
   for (const file of files) {
     const isPdfByType = file.type === 'application/pdf';
@@ -1271,17 +1269,26 @@ function buildCalendarPayload(row, rowIndex) {
 function updateFileSelectionText() {
   const files = Array.from(fileInput.files || []);
   if (clearPdfsBtn) {
-    clearPdfsBtn.disabled = files.length === 0;
+    const hasFiles = files.length > 0;
+    clearPdfsBtn.hidden = !hasFiles;
+    clearPdfsBtn.disabled = !hasFiles;
   }
   if (!files.length) {
-    fileSelection.textContent = 'No PDFs selected yet.';
-    return;
+    if (fileSelection) {
+      fileSelection.textContent = '';
+      fileSelection.hidden = true;
+    }
+  } else if (files.length === 1) {
+    if (fileSelection) {
+      fileSelection.textContent = files[0].name;
+      fileSelection.hidden = false;
+    }
+  } else {
+    if (fileSelection) {
+      fileSelection.textContent = `${files.length} files selected`;
+      fileSelection.hidden = false;
+    }
   }
-  if (files.length === 1) {
-    fileSelection.textContent = files[0].name;
-    return;
-  }
-  fileSelection.textContent = `${files.length} files selected`;
   updateRunSelectedCount();
 }
 
@@ -1728,7 +1735,7 @@ if (profileAuthorQueryInput) {
     }
     clearAuthorCandidates();
     clearFetchedProfileAbstracts();
-    updateProfileFetchStatus('Find your author profile, confirm the match, then fetch metadata abstracts.');
+    updateProfileFetchStatus('Find your profile and fetch paper abstracts.');
   });
 }
 
