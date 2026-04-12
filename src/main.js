@@ -7,7 +7,6 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const MAX_PROFILE_ABSTRACTS = 20;
 const PROFILE_ABSTRACT_PREVIEW_WORDS = 20;
-const RECENT_ABSTRACT_LOOKBACK_YEARS = 5;
 const EXTRACTION_CONCURRENCY = 2;
 const DEFAULT_VISIBLE_RESULTS = 20;
 const LOAD_MORE_STEP = 20;
@@ -56,7 +55,6 @@ const profileAbstractsPanel = document.getElementById('profile-abstracts-panel')
 const profileAbstractsList = document.getElementById('profile-abstracts-list');
 const profileAbstractsCount = document.getElementById('profile-abstracts-count');
 const selectAllAbstractsBtn = document.getElementById('select-all-abstracts-btn');
-const selectRecentAbstractsBtn = document.getElementById('select-recent-abstracts-btn');
 const toggleAbstractPreviewBtn = document.getElementById('toggle-abstract-preview-btn');
 const clearAllAbstractsBtn = document.getElementById('clear-all-abstracts-btn');
 const keywordInput = document.getElementById('custom-keywords');
@@ -93,7 +91,6 @@ let fetchedAuthorCandidates = [];
 let selectedAuthorCandidateId = '';
 let activeAuthorLookupKey = '';
 let profileFetchRunSeq = 0;
-let recentOnlySelectionActive = false;
 let profileAbstractsExpanded = false;
 const selectedProfileAbstractIds = new Set();
 let modelDownloadRequestId = null;
@@ -259,7 +256,7 @@ async function loadScheduleIndex() {
 }
 
 function validateUploads(files, { allowEmpty = false } = {}) {
-  if (!files.length && !allowEmpty) throw new Error('Upload at least one PDF or select profile abstracts.');
+  if (!files.length && !allowEmpty) throw new Error('Upload PDFs, select abstracts, or add keywords.');
 
   for (const file of files) {
     const isPdfByType = file.type === 'application/pdf';
@@ -282,17 +279,6 @@ function truncateWords(text, maxWords = PROFILE_ABSTRACT_PREVIEW_WORDS) {
   const words = normalized.split(' ');
   if (words.length <= maxWords) return normalized;
   return `${words.slice(0, maxWords).join(' ')}…`;
-}
-
-function recentAbstractCutoffYear(lookbackYears = RECENT_ABSTRACT_LOOKBACK_YEARS) {
-  const thisYear = new Date().getFullYear();
-  return thisYear - Math.max(1, lookbackYears) + 1;
-}
-
-function isRecentPublicationYear(publicationYear, lookbackYears = RECENT_ABSTRACT_LOOKBACK_YEARS) {
-  const year = Number(publicationYear);
-  if (!Number.isFinite(year)) return false;
-  return year >= recentAbstractCutoffYear(lookbackYears);
 }
 
 function normalizePersonName(text) {
@@ -582,7 +568,6 @@ function clearAuthorCandidates({ keepLookupKey = false } = {}) {
 }
 
 function clearFetchedProfileAbstracts() {
-  recentOnlySelectionActive = false;
   profileAbstractsExpanded = false;
   fetchedProfileAbstracts = [];
   selectedProfileAbstractIds.clear();
@@ -590,7 +575,6 @@ function clearFetchedProfileAbstracts() {
 }
 
 function applyFetchedProfileAbstracts(abstracts, sourceLabel, selectedAuthorName = '') {
-  recentOnlySelectionActive = false;
   profileAbstractsExpanded = false;
   fetchedProfileAbstracts = abstracts.slice(0, MAX_PROFILE_ABSTRACTS).map((item, idx) => ({
     id: `${idx + 1}`,
@@ -611,15 +595,6 @@ function applyFetchedProfileAbstracts(abstracts, sourceLabel, selectedAuthorName
   renderProfileAbstracts();
 }
 
-function updateRecentSelectionButtonLabel() {
-  if (!selectRecentAbstractsBtn) return;
-  if (recentOnlySelectionActive) {
-    selectRecentAbstractsBtn.textContent = 'Select all years';
-  } else {
-    selectRecentAbstractsBtn.textContent = `Select recent only (${RECENT_ABSTRACT_LOOKBACK_YEARS}y)`;
-  }
-}
-
 function updateAbstractPreviewToggleButtonLabel() {
   if (!toggleAbstractPreviewBtn) return;
   toggleAbstractPreviewBtn.textContent = profileAbstractsExpanded ? 'Collapse all' : 'Expand all';
@@ -630,7 +605,7 @@ function updateRunSelectedCount() {
   const pdfCount = Array.from(fileInput?.files || []).length;
   const abstractCount = getSelectedProfileAbstracts().length;
   const keywordCount = parseCustomKeywords(keywordInput?.value || '').length;
-  runSelectedCount.textContent = `${pdfCount} PDFs · ${abstractCount} profile abstracts · ${keywordCount} boosted keywords`;
+  runSelectedCount.textContent = `${pdfCount} PDFs · ${abstractCount} profile abstracts · ${keywordCount} keywords`;
 }
 
 function updateAuthorCandidatesCount() {
@@ -733,9 +708,7 @@ async function fetchAndRenderAbstractsForSelectedCandidate({ runSeq = null } = {
 
   const sourceLabel = `OpenAlex metadata (${selectedCandidate.displayName})`;
   applyFetchedProfileAbstracts(abstracts, sourceLabel, selectedCandidate.displayName);
-  updateProfileFetchStatus(
-    `Fetched ${fetchedProfileAbstracts.length} abstracts from ${selectedCandidate.displayName}. Select relevant abstracts and click Run.`
-  );
+  updateProfileFetchStatus(`Fetched ${fetchedProfileAbstracts.length} abstracts from ${selectedCandidate.displayName}.`);
   return true;
 }
 
@@ -755,14 +728,10 @@ function updateProfileAbstractSelectionCount() {
   if (profileAbstractsCount) {
     profileAbstractsCount.textContent = `${selected} of ${fetchedProfileAbstracts.length} selected`;
   }
-  if (selectRecentAbstractsBtn) {
-    selectRecentAbstractsBtn.disabled = fetchedProfileAbstracts.length === 0;
-  }
   if (toggleAbstractPreviewBtn) {
     toggleAbstractPreviewBtn.disabled = fetchedProfileAbstracts.length === 0;
   }
   updateRunSelectedCount();
-  updateRecentSelectionButtonLabel();
   updateAbstractPreviewToggleButtonLabel();
 }
 
@@ -1351,7 +1320,7 @@ function renderBoostedKeywords() {
   if (!keywords.length) {
     const empty = document.createElement('p');
     empty.className = 'muted boosted-keywords-empty';
-    empty.textContent = 'No boosted keywords yet.';
+    empty.textContent = 'No keywords yet.';
     boostedKeywordsList.appendChild(empty);
     return;
   }
@@ -1361,7 +1330,7 @@ function renderBoostedKeywords() {
     chip.type = 'button';
     chip.className = 'boosted-keyword-chip';
     chip.dataset.keyword = keyword;
-    chip.setAttribute('aria-label', `Remove boosted keyword: ${keyword}`);
+    chip.setAttribute('aria-label', `Remove keyword: ${keyword}`);
 
     const text = document.createElement('span');
     text.textContent = keyword;
@@ -1561,7 +1530,7 @@ function renderResultsPage() {
 
 async function runScoringFromExtracted(statusText, skipDoneStatus = false) {
   if (!extractedContext) {
-    throw new Error('Upload PDFs or select profile abstracts, then run analysis.');
+    throw new Error('Upload PDFs, select abstracts, or add keywords, then run analysis.');
   }
 
   const runId = ++scoringRunSeq;
@@ -1741,34 +1710,10 @@ if (profileAuthorQueryInput) {
 
 if (selectAllAbstractsBtn) {
   selectAllAbstractsBtn.addEventListener('click', () => {
-    recentOnlySelectionActive = false;
     selectedProfileAbstractIds.clear();
     for (const item of fetchedProfileAbstracts) {
       selectedProfileAbstractIds.add(item.id);
     }
-    renderProfileAbstracts();
-  });
-}
-
-if (selectRecentAbstractsBtn) {
-  selectRecentAbstractsBtn.addEventListener('click', () => {
-    if (!fetchedProfileAbstracts.length) return;
-    const enableRecentOnly = !recentOnlySelectionActive;
-    recentOnlySelectionActive = enableRecentOnly;
-    selectedProfileAbstractIds.clear();
-
-    if (enableRecentOnly) {
-      for (const item of fetchedProfileAbstracts) {
-        if (isRecentPublicationYear(item.publicationYear)) {
-          selectedProfileAbstractIds.add(item.id);
-        }
-      }
-    } else {
-      for (const item of fetchedProfileAbstracts) {
-        selectedProfileAbstractIds.add(item.id);
-      }
-    }
-
     renderProfileAbstracts();
   });
 }
@@ -1783,7 +1728,6 @@ if (toggleAbstractPreviewBtn) {
 
 if (clearAllAbstractsBtn) {
   clearAllAbstractsBtn.addEventListener('click', () => {
-    recentOnlySelectionActive = false;
     selectedProfileAbstractIds.clear();
     renderProfileAbstracts();
   });
@@ -1800,7 +1744,6 @@ if (profileAbstractsList) {
     } else {
       selectedProfileAbstractIds.delete(id);
     }
-    recentOnlySelectionActive = false;
     updateProfileAbstractSelectionCount();
   });
 }
@@ -1924,7 +1867,8 @@ form.addEventListener('submit', async (event) => {
   try {
     const files = Array.from(fileInput.files || []);
     const selectedAbstracts = getSelectedProfileAbstracts();
-    validateUploads(files, { allowEmpty: selectedAbstracts.length > 0 });
+    const customKeywords = parseCustomKeywords(keywordInput?.value || '');
+    validateUploads(files, { allowEmpty: selectedAbstracts.length > 0 || customKeywords.length > 0 });
 
     runBtn.disabled = true;
     isExtracting = true;

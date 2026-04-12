@@ -253,15 +253,28 @@ export function buildScheduleSemanticTexts(scheduleRows) {
 }
 
 export function buildWorkChunkPlan(worksTexts, customKeywords = []) {
-  const keywordSuffix =
-    Array.isArray(customKeywords) && customKeywords.length > 0
-      ? ` Focus topics: ${customKeywords.join(', ')}.`
-      : '';
+  const normalizedKeywords = Array.isArray(customKeywords)
+    ? customKeywords
+        .map((entry) => compactWhitespace(entry))
+        .filter(Boolean)
+    : [];
+  const normalizedWorksTexts = Array.isArray(worksTexts)
+    ? worksTexts
+        .map((entry) => compactWhitespace(entry))
+        .filter(Boolean)
+    : [];
+  const hasWorkTexts = normalizedWorksTexts.length > 0;
+  const sourceTexts = hasWorkTexts
+    ? normalizedWorksTexts
+    : normalizedKeywords.length
+      ? [`Focus topics: ${normalizedKeywords.join(', ')}.`]
+      : [];
+  const keywordSuffix = hasWorkTexts && normalizedKeywords.length > 0 ? ` Focus topics: ${normalizedKeywords.join(', ')}.` : '';
 
   const allChunks = [];
   const spans = [];
 
-  for (const sourceText of worksTexts) {
+  for (const sourceText of sourceTexts) {
     const base = compactWhitespace(sourceText);
     const text = keywordSuffix ? `${base} ${keywordSuffix}`.trim() : base;
     const chunks = splitTextIntoChunks(text, {

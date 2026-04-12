@@ -39,7 +39,7 @@
     <main class="page">
       <section class="hero">
         <h1>CHI-tinerary</h1>
-        <p class="lead">Personalized CHI &#39;26 agenda generation from your papers that runs 100% locally in your browser.</p>
+        <p class="lead">CHI &#39;26 agenda generation from your papers that runs locally in your browser.</p>
       </section>
 
       <section class="panel">
@@ -66,7 +66,7 @@
               data-source-tab="profile"
               tabindex="-1"
             >
-              Author Lookup
+              Abstracts
             </button>
             <button
               id="source-tab-keywords"
@@ -78,7 +78,7 @@
               data-source-tab="keywords"
               tabindex="-1"
             >
-              Boost Keywords
+              Keywords
             </button>
           </div>
 
@@ -123,15 +123,15 @@
             data-source-panel="profile"
           >
             <div class="profile-field">
-              <label for="profile-author-query">Author name</label>
               <div class="profile-input-row">
                 <input
                   id="profile-author-query"
                   name="profile_author_query"
                   type="text"
                   autocomplete="name"
+                  placeholder="Author name"
                 />
-                <button id="fetch-profile-btn" type="button" class="profile-fetch-btn">Find author</button>
+                <button id="fetch-profile-btn" type="button" class="profile-fetch-btn">Search</button>
               </div>
               <p id="profile-fetch-status" class="muted profile-fetch-status">
                 Find your profile and fetch paper abstracts.
@@ -153,7 +153,6 @@
               </div>
               <div class="profile-abstracts-actions">
                 <button id="select-all-abstracts-btn" type="button" class="secondary-btn">Select all</button>
-                <button id="select-recent-abstracts-btn" type="button" class="secondary-btn">Select recent only (5y)</button>
                 <button id="toggle-abstract-preview-btn" type="button" class="secondary-btn">Expand all</button>
                 <button id="clear-all-abstracts-btn" type="button" class="secondary-btn">Clear all</button>
               </div>
@@ -170,7 +169,7 @@
           >
             <div class="keyword-row">
               <div class="keyword-input-wrap">
-                <label for="custom-keywords">Boost Keywords (comma/newline separated, auto-refreshes)</label>
+                <label for="custom-keywords">Keywords (comma/newline separated)</label>
                 <textarea
                   id="custom-keywords"
                   name="custom_keywords"
@@ -178,9 +177,9 @@
                 ></textarea>
               </div>
               <aside class="boosted-keywords-panel">
-                <h3>Boosted Keywords</h3>
+                <h3>Keywords</h3>
                 <div id="boosted-keywords-list" class="boosted-keywords-list">
-                  <p class="muted boosted-keywords-empty">No boosted keywords yet.</p>
+                  <p class="muted boosted-keywords-empty">No keywords yet.</p>
                 </div>
               </aside>
             </div>
@@ -206,7 +205,7 @@
                 </div>
               </div>
               <p id="model-download-status" class="hidden" aria-live="polite"></p>
-              <p id="run-selected-count" class="muted run-selected-count">0 PDFs · 0 profile abstracts · 0 boosted keywords</p>
+              <p id="run-selected-count" class="muted run-selected-count">0 PDFs · 0 profile abstracts · 0 keywords</p>
               <button id="run-btn" class="run-btn" type="submit">Run</button>
             </div>
           </div>

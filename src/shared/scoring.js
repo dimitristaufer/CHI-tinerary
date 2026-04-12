@@ -71,18 +71,31 @@ export function scoreSchedule({
   workNames = [],
   customKeywords = [],
 }) {
-  if (!Array.isArray(worksTexts) || worksTexts.length === 0) {
-    throw new Error('No work texts provided.');
+  const normalizedKeywords = Array.isArray(customKeywords)
+    ? customKeywords
+        .map((entry) => String(entry || '').trim())
+        .filter(Boolean)
+    : [];
+  const normalizedWorksTexts = Array.isArray(worksTexts)
+    ? worksTexts
+        .map((text) => String(text || '').trim())
+        .filter(Boolean)
+    : [];
+  const hasWorkTexts = normalizedWorksTexts.length > 0;
+  const effectiveWorksTexts = hasWorkTexts ? normalizedWorksTexts : normalizedKeywords.length ? [normalizedKeywords.join(' ')] : [];
+
+  if (!effectiveWorksTexts.length) {
+    throw new Error('No papers, abstracts, or keywords provided.');
   }
   if (!scheduleIndex || !Array.isArray(scheduleIndex.rows) || !scheduleIndex.schedule_doc_freq) {
     throw new Error('Invalid schedule index payload.');
   }
 
   const scheduleRows = scheduleIndex.rows;
-  const workCounters = worksTexts.map((text) => counterFromText(text));
+  const workCounters = effectiveWorksTexts.map((text) => counterFromText(text));
 
-  if (Array.isArray(customKeywords) && customKeywords.length > 0) {
-    const keywordCounter = counterFromText(customKeywords.join(' '));
+  if (hasWorkTexts && normalizedKeywords.length > 0) {
+    const keywordCounter = counterFromText(normalizedKeywords.join(' '));
     const keywordBoost = 6;
     for (const workCounter of workCounters) {
       for (const [term, count] of Object.entries(keywordCounter)) {
@@ -166,8 +179,8 @@ export function scoreSchedule({
     rows_all: rowsAll,
     rows: resultRows,
     keywords: topKeywords(workCounters, idf, 15),
-    workSummaries: worksTexts.map((text, idx) => ({
-      name: workNames[idx] || `Work ${idx + 1}`,
+    workSummaries: effectiveWorksTexts.map((text, idx) => ({
+      name: workNames[idx] || (!hasWorkTexts ? 'Keywords' : `Work ${idx + 1}`),
       chars: text.length,
       token_count: Object.values(workCounters[idx]).reduce((acc, count) => acc + count, 0),
       unique_terms: Object.keys(workCounters[idx]).length,
