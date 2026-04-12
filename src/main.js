@@ -1841,23 +1841,25 @@ keywordInput.addEventListener('input', () => {
   }, KEYWORD_DEBOUNCE_MS);
 });
 
-matchingModeInput.addEventListener('change', async () => {
-  updateRunButtonAvailability();
-  if (!extractedContext || isExtracting) return;
-  const mode = normalizeMatchingMode(matchingModeInput.value);
-  if (modeNeedsSemanticModel(mode) && !semanticModelAvailable) {
-    setStatus('Semantic model is not available. Download it first or deploy bundled /models files.');
-    return;
-  }
+if (matchingModeInput) {
+  matchingModeInput.addEventListener('change', async () => {
+    updateRunButtonAvailability();
+    if (!extractedContext || isExtracting) return;
+    const mode = normalizeMatchingMode(matchingModeInput.value);
+    if (modeNeedsSemanticModel(mode) && !semanticModelAvailable) {
+      setStatus('Semantic model is not available. Download it first or deploy bundled /models files.');
+      return;
+    }
 
-  try {
-    await runScoringFromExtracted(`Recomputing with ${matchingModeLabel(mode)} matching...`);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    setStatus(message);
-    appendStatusItem(`Error: ${message}`);
-  }
-});
+    try {
+      await runScoringFromExtracted(`Recomputing with ${matchingModeLabel(mode)} matching...`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(message);
+      appendStatusItem(`Error: ${message}`);
+    }
+  });
+}
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
